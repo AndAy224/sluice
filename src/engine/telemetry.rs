@@ -170,6 +170,18 @@ pub enum Event {
         files: usize,
         bytes: u64,
     },
+    /// What one device has to move in this phase.
+    ///
+    /// [`Plan`](Event::Plan) is the phase total, which during verify is the sum
+    /// of every stream — so it is the denominator for the run, and the wrong
+    /// denominator for any single row. Each hasher re-reads its own copy at its
+    /// own speed, and a card on an internal disk finishes while a USB drive is
+    /// four minutes from done; without this the two cannot be drawn on the same
+    /// scale without one of them lying.
+    DevicePlan {
+        dev: DeviceId,
+        bytes: u64,
+    },
     FileStart {
         idx: usize,
         /// Forward-slash relative path, matching the manifest.

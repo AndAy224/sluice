@@ -305,14 +305,27 @@ fn verify_view(ui: &mut Ui, devices: &BTreeMap<DeviceId, DeviceState>, now: f64)
         .color(theme::DIM)
         .font(theme::mono(theme::LOG)),
     );
-    // Scaled against the fastest rate seen in the rolling history, not against
-    // whichever device happens to be fastest in this frame. With a per-frame
-    // reference every bar moved whenever any one device's sample moved — so
-    // four drives running at perfectly steady rates drew four bars that never
-    // sat still, and a device whose own rate was constant still bounced.
-    let peak = devices.values().map(|d| d.peak()).fold(1.0, f32::max);
+    // These bars fill with the work each hasher has done, not with how fast it
+    // is going. They were a rate meter scaled against the fastest rate any
+    // device had ever reached, and on real hardware that is a category error:
+    // the cards sit on internal disks and finish in seconds at several GB/s,
+    // the drives are on USB at a fortieth of that. Measured over one run —
+    // cards 3540 and 3703 MB/s, drives 121 and 41 — the two rows that decide
+    // the verdict drew at 2.9% and 1.0% of the width, against a peak set by a
+    // device that had stopped working four seconds in and would never emit
+    // again. `smoothed_mbps` already zeroes a finished device's *numerator*;
+    // nothing was zeroing the denominator it had left behind.
+    //
+    // Progress has none of that coupling: every row is measured against its own
+    // work, a finished card sits honestly at full, and a slow drive advances at
+    // its own pace. The rate is still on the row, as the number it always was.
     for (dev, dstate) in devices {
         let rate = dstate.smoothed_mbps(now);
+        let progress = if dstate.plan_bytes > 0 {
+            (dstate.bytes as f32 / dstate.plan_bytes as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let hue = theme::device_colour(*dev);
         ui.horizontal(|ui| {
             fixed(ui, W_WHO, |ui| {
@@ -323,7 +336,7 @@ fn verify_view(ui: &mut Ui, devices: &BTreeMap<DeviceId, DeviceState>, now: f64)
                 );
             });
             let bar_width = bar_width(ui);
-            super::devices::meter(ui, rate / peak, bar_width, hue);
+            super::devices::meter(ui, progress, bar_width, hue);
             fixed(ui, W_RATE, |ui| {
                 ui.label(
                     RichText::new(theme::mbps(rate))
@@ -331,8 +344,19 @@ fn verify_view(ui: &mut Ui, devices: &BTreeMap<DeviceId, DeviceState>, now: f64)
                         .font(theme::mono(theme::LOG)),
                 );
             });
+            // Both numbers, because "6.2 GB" alone does not say how much is
+            // left and a bar alone does not say how much has been read.
+            let read = if dstate.plan_bytes > 0 {
+                format!(
+                    "{} of {}",
+                    theme::bytes(dstate.bytes).trim(),
+                    theme::bytes(dstate.plan_bytes).trim()
+                )
+            } else {
+                theme::bytes(dstate.bytes).trim().to_string()
+            };
             ui.label(
-                RichText::new(theme::bytes(dstate.bytes))
+                RichText::new(read)
                     .color(theme::DIM)
                     .font(theme::mono(theme::SMALL)),
             );

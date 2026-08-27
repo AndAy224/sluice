@@ -37,6 +37,9 @@ const STALE_AFTER: f64 = 0.75;
 pub struct DeviceState {
     pub info: Option<DeviceInfo>,
     pub bytes: u64,
+    /// What this device owes in the current phase, if the engine has said.
+    /// Zero means nobody has told us, not "nothing to do".
+    pub plan_bytes: u64,
     pub mbps: f32,
     /// Job-elapsed seconds at the last throughput sample.
     last_sample_at: f64,
@@ -50,6 +53,7 @@ impl Default for DeviceState {
         Self {
             info: None,
             bytes: 0,
+            plan_bytes: 0,
             mbps: 0.0,
             last_sample_at: f64::NEG_INFINITY,
             history: [0.0; BUCKETS],

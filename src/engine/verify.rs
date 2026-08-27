@@ -344,6 +344,30 @@ struct Measurement {
     err: Option<String>,
 }
 
+/// What each hasher has to read, in target order.
+///
+/// The phase total is the sum of these, and is deliberately derived from them
+/// rather than computed alongside them. They answer the same question at two
+/// scales — one row's denominator and the run's — and two loops both restating
+/// `expected_on` are two chances to disagree about a relay-mode card that does
+/// not hold every file.
+///
+/// Counted per file against `expected_on`, so a card that genuinely does not
+/// hold a file is not charged for reading it.
+pub fn plan_by_device(items: &[CopyItem], targets: &[VerifyTarget]) -> Vec<(DeviceId, u64)> {
+    targets
+        .iter()
+        .map(|t| {
+            let bytes = items
+                .iter()
+                .filter(|it| expected_on(t.dev, it.pairing))
+                .map(|it| it.size)
+                .sum();
+            (t.dev, bytes)
+        })
+        .collect()
+}
+
 /// Run the verify phase: every copy hashed unbuffered, concurrently, then
 /// compared.
 ///
@@ -726,6 +750,68 @@ mod tests {
         let d = diagnose(&h);
         assert_eq!(d, Diagnosis::UnrepeatableSourceRead);
         assert!(d.describe().contains("Re-run"));
+    }
+
+    /// Each hasher's bar is drawn against its own plan, and the run's estimate
+    /// against the sum of them. Those two have to be the same arithmetic.
+    ///
+    /// Before this, the phase total was computed by its own loop over
+    /// `expected_on` and the per-device figures did not exist at all -- every
+    /// verify row was drawn as a rate against the fastest rate any device had
+    /// ever hit. On real hardware the cards sit on internal disks and finish in
+    /// seconds at several GB/s while the drives crawl over USB, so the two rows
+    /// that decide the verdict rendered at 2.9% and 1.0% of the bar's width,
+    /// scaled by a device that had already stopped.
+    #[test]
+    fn each_hasher_is_measured_against_its_own_work() {
+        let target = |dev| VerifyTarget {
+            dev,
+            root: PathBuf::from("x"),
+        };
+        let targets = vec![
+            target(DeviceId::Card1),
+            target(DeviceId::Card2),
+            target(DeviceId::DestA),
+            target(DeviceId::DestB),
+        ];
+        // A relay-mode card: card 2 filled and card 1 carried on alone, so the
+        // untwinned files exist on one card and on both destinations.
+        let items = vec![
+            item("both.ARW", 100, Pairing::Twinned),
+            item("c1only.ARW", 30, Pairing::OnlyOnC1),
+            item("c2only.ARW", 7, Pairing::OnlyOnC2),
+        ];
+
+        let plan = plan_by_device(&items, &targets);
+        let by = |d: DeviceId| plan.iter().find(|(x, _)| *x == d).unwrap().1;
+
+        assert_eq!(by(DeviceId::Card1), 130, "card 1 holds both.ARW and c1only");
+        assert_eq!(by(DeviceId::Card2), 107, "card 2 holds both.ARW and c2only");
+        // Every destination holds everything, whatever the cards did.
+        assert_eq!(by(DeviceId::DestA), 137);
+        assert_eq!(by(DeviceId::DestB), 137);
+
+        // The run's denominator is these and nothing else, or a bar and the
+        // estimate above it disagree about the same pass.
+        let total: u64 = plan.iter().map(|(_, b)| b).sum();
+        assert_eq!(total, 130 + 107 + 137 + 137);
+
+        // And no row can be asked to fill past its end.
+        for (dev, bytes) in &plan {
+            assert!(*bytes <= total, "{dev:?} owes more than the whole phase");
+            assert!(*bytes > 0, "{dev:?} would draw an empty bar all pass");
+        }
+    }
+
+    fn item(rel: &str, size: u64, pairing: Pairing) -> CopyItem {
+        CopyItem {
+            rel: rel.into(),
+            src: PathBuf::from(rel),
+            src_dev: DeviceId::Card1,
+            size,
+            mtime: crate::engine::scan::Mtime { secs: 0, nanos: 0 },
+            pairing,
+        }
     }
 
     #[test]

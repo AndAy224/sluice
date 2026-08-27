@@ -438,6 +438,10 @@ impl App {
                 if *phase != self.phase {
                     for d in self.devices.values_mut() {
                         d.bytes = 0;
+                        // The denominator belongs to the phase as much as the
+                        // numerator does. Carrying copy's over into verify
+                        // would draw every row against the wrong total.
+                        d.plan_bytes = 0;
                     }
                     self.pipeline.file_index = 0;
                     self.pipeline.trail.clear();
@@ -460,6 +464,9 @@ impl App {
             }
             Event::Device { id, info } => {
                 self.devices.entry(*id).or_default().info = Some((**info).clone());
+            }
+            Event::DevicePlan { dev, bytes } => {
+                self.devices.entry(*dev).or_default().plan_bytes = *bytes;
             }
             Event::Bytes { dev, delta } => {
                 self.devices.entry(*dev).or_default().bytes += delta;

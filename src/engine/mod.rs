@@ -721,21 +721,21 @@ pub fn run_job(cfg: &JobConfig, tel: &Telemetry, cancel: &Arc<AtomicBool>) -> Re
     // within its first seconds, and then displayed "about 0s left" for the rest
     // of the pass. Counted per file against `expected_on`, so a relay-mode card
     // that genuinely does not hold a file is not counted as bytes to read.
-    let verify_bytes: u64 = recon
-        .items
-        .iter()
-        .map(|it| {
-            let streams = targets
-                .iter()
-                .filter(|t| verify::expected_on(t.dev, it.pairing))
-                .count() as u64;
-            it.size * streams
-        })
-        .sum();
+    let per_device = verify::plan_by_device(&recon.items, &targets);
+    let verify_bytes: u64 = per_device.iter().map(|(_, b)| b).sum();
     tel.emit(telemetry::Event::Plan {
         files: recon.items.len(),
         bytes: verify_bytes,
     });
+    // And what each hasher owes on its own. The phase total is four times one
+    // stream on a two-card two-drive night, so a row drawn against it could
+    // only ever fill a quarter of the way.
+    for (dev, bytes) in &per_device {
+        tel.emit(telemetry::Event::DevicePlan {
+            dev: *dev,
+            bytes: *bytes,
+        });
+    }
     tel.info(
         Stage::Verify,
         format!(
