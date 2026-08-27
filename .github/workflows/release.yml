@@ -1,0 +1,116 @@
+name: release
+
+# Builds a signed, checksummed, attested sluice.exe and attaches it to a tag.
+#
+# Signing is wired but optional: without a certificate the job still produces a
+# usable binary and says plainly that it is unsigned, rather than failing. That
+# is deliberate -- a release process that cannot run without a certificate is a
+# release process nobody can test.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --locked --release
+
+      - name: Test
+        run: cargo test --locked --all-targets
+
+      # SmartScreen warns on an unsigned executable, which is friction at
+      # exactly the wrong moment: a fresh laptop, at 11pm, before a shoot. The
+      # certificate lives in two secrets -- SIGNING_CERT_PFX_BASE64 and
+      # SIGNING_CERT_PASSWORD -- and the step is skipped when they are absent.
+      - name: Sign
+        id: sign
+        shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.SIGNING_CERT_PFX_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          if (-not $env:CERT_B64) {
+            Write-Output "::warning::No signing certificate configured -- publishing an UNSIGNED binary. SmartScreen will warn on first run."
+            "signed=false" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_B64))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+                      Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found on the runner" }
+          & $signtool.FullName sign /fd SHA256 /td SHA256 `
+              /tr http://timestamp.digicert.com `
+              /f $pfx /p $env:CERT_PASSWORD `
+              target/release/sluice.exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed with $LASTEXITCODE" }
+          # A timestamp is what keeps the signature valid after the certificate
+          # expires. Without it the binary starts warning again in a year.
+          & $signtool.FullName verify /pa /all target/release/sluice.exe
+          if ($LASTEXITCODE -ne 0) { throw "signature did not verify" }
+          Remove-Item $pfx -Force
+          "signed=true" | Out-File -Append -Encoding ascii $env:GITHUB_OUTPUT
+
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash target/release/sluice.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  sluice.exe" | Out-File -Encoding ascii target/release/sluice.exe.sha256
+          "### sluice.exe"                          | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "- signed: ${{ steps.sign.outputs.signed }}" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "- sha256: ``$h``"                        | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      # Binds this exact binary's digest to this workflow, this commit, and this
+      # repository, verifiable with `gh attestation verify sluice.exe -R <repo>`.
+      # A user who downloads the exe otherwise has no way to tell whether it is
+      # the one this workflow built.
+      # Public repositories only -- see the note in ci.yml. A release that
+      # cannot be cut because GitHub does not offer attestations on this plan
+      # is worse than a release that says plainly it has none.
+      - name: Attest build provenance
+        id: attest
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/release/sluice.exe
+
+      - name: Publish
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Say what this build actually has, rather than instructions that
+          # would fail: attestations are not offered for user-owned private
+          # repositories, so the digest is the only check available there.
+          $h = (Get-Content target/release/sluice.exe.sha256 -Raw).Trim()
+          $provenance = if ("${{ steps.attest.outcome }}" -eq "success") {
+            "Verify provenance with ``gh attestation verify sluice.exe -R ${{ github.repository }}``."
+          } else {
+            "No provenance attestation: GitHub does not offer them for this repository. Check the SHA-256 above instead."
+          }
+          gh release create ${{ github.ref_name }} `
+            target/release/sluice.exe `
+            target/release/sluice.exe.sha256 `
+            LICENSE NOTICE.md SECURITY.md `
+            --title "sluice ${{ github.ref_name }}" `
+            --notes "Signed: ${{ steps.sign.outputs.signed }}. sha256: ``$h``. $provenance"

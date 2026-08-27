@@ -1,0 +1,54 @@
+[package]
+name = "sluice"
+version = "0.1.0"
+edition = "2021"
+description = "Verified camera offload with twin-card cross-checking and an explicit format verdict"
+publish = false
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+crossbeam-channel = "0.5"
+filetime = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+quick-xml = "0.37"
+walkdir = "2"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+
+egui = "0.36"
+eframe = { version = "0.36", default-features = false, features = [
+    "glow",
+    "default_fonts",
+] }
+rfd = { version = "0.17.2", default-features = false, features = ["common-controls-v6"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Console",
+    "Win32_System_Power",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_System_SystemServices",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+# Deliberately NOT panic = "abort": a panicking worker thread must be caught and
+# reported, not take a 20-minute job down with it.
+panic = "unwind"
+
+[dev-dependencies]
+# Everything else the tests need -- crossbeam-channel, filetime, serde_json -- is
+# already a real dependency, and listing it twice only invites the two copies to
+# drift.
+tempfile = "3"

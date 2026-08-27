@@ -1,0 +1,119 @@
+name: ci
+
+# sluice is Windows-only by construction: FILE_FLAG_NO_BUFFERING, physical
+# device numbers, and the keep-awake guard have no portable equivalent, so
+# there is nothing to gain from a Linux runner.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning that reaches main is a warning nobody will ever fix.
+  RUSTFLAGS: -D warnings
+
+# Needed by attest-build-provenance, which signs a statement binding the
+# artifact's digest to this workflow run. Nothing else in the job needs write
+# access, so the grants are per-job rather than at the top level.
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      # Full history so build.rs can stamp a real commit rather than "unknown".
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # --locked so CI builds the same dependency set the shipping binary was built
+      # from. A silent upgrade of egui before a field test is exactly the
+      # drift the design flags as a top risk.
+      - name: Test
+        run: cargo test --locked --all-targets
+
+      - name: Release build
+        run: cargo build --locked --release
+
+      # The day-one proof, on whatever disk the runner has. It cannot stand in
+      # for running this against the real LaCie -- the assumption is about a
+      # device and its driver -- but a regression here is worth catching early.
+      - name: Sector-tail selftest
+        run: cargo run --locked --release -- selftest tail .
+
+      # doctor touches every Windows API the program depends on and prints
+      # rather than asserts, so it is the cheapest possible smoke test that the
+      # power, volume, and device-identity calls all still link and return.
+      - name: Doctor smoke test
+        run: cargo run --locked --release -- doctor
+
+      - name: Licences are reachable from the binary
+        run: cargo run --locked --release -- licenses
+
+      # A user has no way to tell whether the exe they downloaded is the one
+      # this workflow built. The digest and the attestation together are what
+      # make that checkable, which matters more than usual for a program whose
+      # output authorises destroying the original.
+      - name: Checksum
+        shell: pwsh
+        run: |
+          $h = Get-FileHash target/release/sluice.exe -Algorithm SHA256
+          "$($h.Hash.ToLower())  sluice.exe" | Out-File -Encoding ascii target/release/sluice.exe.sha256
+          Write-Output "SHA256  $($h.Hash.ToLower())"
+          "### sluice.exe" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "``````" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "SHA256  $($h.Hash.ToLower())" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "``````" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      # Only public repositories can persist an attestation: on a user-owned
+      # private one the API refuses with "Feature not available", which failed
+      # this job on every push for eleven runs while everything that actually
+      # matters -- fmt, clippy, the tests, the release build, the sector-tail
+      # selftest -- passed each time. A permanently red CI is worse than no CI,
+      # because it trains you to stop looking.
+      #
+      # Tested for public rather than against private, so an event payload
+      # without the field skips the step instead of failing the build.
+      - name: Attest build provenance
+        if: github.event_name == 'push' && github.event.repository.visibility == 'public'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: target/release/sluice.exe
+
+      - name: Note that provenance was skipped
+        if: github.event_name == 'push' && github.event.repository.visibility != 'public'
+        shell: pwsh
+        run: |
+          "### Build provenance not attested"                                  | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "GitHub does not offer attestations for user-owned private"          | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "repositories. The SHA-256 above still identifies this binary;"      | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          "``gh attestation verify`` starts working when the repo is public."  | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sluice
+          path: |
+            target/release/sluice.exe
+            target/release/sluice.exe.sha256
+            LICENSE
+            NOTICE.md
+          if-no-files-found: error

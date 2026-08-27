@@ -1,0 +1,7 @@
+# Single binary, no VC++ redistributable needed on the machine that runs it.
+#
+# Scoped by cfg rather than by one triple: the README promises a self-contained
+# exe, and pinning this to x86_64 would quietly break that promise for an arm64
+# or 32-bit build of the same source.
+[target.'cfg(windows)']
+rustflags = ["-C", "target-feature=+crt-static"]

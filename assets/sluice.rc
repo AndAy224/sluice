@@ -1,0 +1,32 @@
+// Win32 resources: the Explorer icon and the file properties.
+//
+// Compiled once into sluice.res, which is committed alongside it, so the build
+// links a ready-made resource instead of shelling out to rc.exe. See build.rs.
+// Regenerate with assets/mkicon.ps1 followed by:
+//     rc.exe /nologo /fo assets\sluice.res assets\sluice.rc
+
+1 ICON "sluice.ico"
+
+1 VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEOS          0x40004L
+FILETYPE        0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "Verified camera offload"
+            VALUE "FileVersion",     "0.1.0"
+            VALUE "InternalName",    "sluice"
+            VALUE "OriginalFilename","sluice.exe"
+            VALUE "ProductName",     "sluice"
+            VALUE "ProductVersion",  "0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

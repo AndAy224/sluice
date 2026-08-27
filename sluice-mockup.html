@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sluice — UI mockup</title>
+<style>
+  :root{
+    --bg:#0B0E14;
+    --panel:#12161F;
+    --panel2:#171C27;
+    --line:#232A38;
+    --line-soft:#1B212C;
+    --text:#C8D1DE;
+    --dim:#6B7686;
+    --dimmer:#464F5E;
+
+    /* twin pairing is the premise of the design — cards share a hue, dests share a hue */
+    --card:#35D6C0;
+    --dest:#8B93F8;
+    --aux:#6B7686;
+
+    --ok:#46C46A;
+    --warn:#E0A72C;
+    --err:#F2565B;
+
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  *{box-sizing:border-box;}
+
+  html,body{
+    margin:0; padding:0;
+    background:#05070B;
+    color:var(--text);
+    font-family:var(--mono);
+    font-size:13px;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .page{
+    max-width:1180px;
+    margin:0 auto;
+    padding:22px 16px 40px;
+  }
+
+  /* ---------- demo scaffolding (deliberately outside the app frame) ---------- */
+  .scaffold{
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
+    margin-bottom:14px;
+    padding:10px 12px;
+    border:1px dashed var(--line);
+    border-radius:6px;
+    background:rgba(255,255,255,.012);
+  }
+  .scaffold .tag{
+    font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--dimmer); margin-right:6px;
+  }
+  .scaffold button{
+    font-family:var(--mono); font-size:11.5px;
+    background:var(--panel2); color:var(--text);
+    border:1px solid var(--line); border-radius:4px;
+    padding:6px 11px; cursor:pointer;
+    transition:border-color .12s, color .12s;
+  }
+  .scaffold button:hover{border-color:var(--dim);}
+  .scaffold button:focus-visible{outline:2px solid var(--card); outline-offset:2px;}
+  .scaffold button.active{border-color:var(--card); color:var(--card);}
+
+  /* ---------- app window ---------- */
+  .app{
+    border:1px solid var(--line);
+    border-radius:8px;
+    background:var(--bg);
+    overflow:hidden;
+    box-shadow:0 24px 60px rgba(0,0,0,.55);
+  }
+
+  .titlebar{
+    display:flex; align-items:center; gap:10px;
+    padding:9px 13px;
+    background:var(--panel);
+    border-bottom:1px solid var(--line);
+  }
+  .dots{display:flex; gap:6px; margin-right:4px;}
+  .dots i{width:10px;height:10px;border-radius:50%;background:var(--line);display:block;}
+  .titlebar .name{font-weight:600; letter-spacing:.02em;}
+  .titlebar .ver{color:var(--dimmer); font-size:11px;}
+  .titlebar .spacer{flex:1;}
+  .titlebar .sess{color:var(--dim); font-size:11px;}
+
+  .section-label{
+    font-size:9.5px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--dimmer);
+    padding:11px 13px 7px;
+  }
+
+  /* ---------- path pickers ---------- */
+  .paths{
+    padding:2px 13px 12px;
+    display:grid; gap:5px;
+  }
+  .prow{
+    display:grid;
+    grid-template-columns:74px 1fr auto;
+    align-items:center; gap:10px;
+  }
+  .prow .lbl{font-size:10.5px; letter-spacing:.1em; color:var(--dim);}
+  .prow .field{
+    background:var(--panel2);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:5px 9px;
+    color:var(--text);
+    font-size:12px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .prow .meta{font-size:11px; color:var(--dim); white-space:nowrap;}
+  .prow .meta b{font-weight:400; color:var(--dimmer);}
+  .prow[data-kind="card"] .lbl{color:var(--card);}
+  .prow[data-kind="dest"] .lbl{color:var(--dest);}
+  .prow[data-kind="aux"] .lbl{color:var(--aux);}
+  .prow.off .field, .prow.off .meta{opacity:.42;}
+
+  /* ---------- device strip ---------- */
+  .devices{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:8px;
+    padding:2px 13px 13px;
+  }
+  .dev{
+    border:1px solid var(--line);
+    border-top:2px solid var(--line);
+    border-radius:5px;
+    background:var(--panel);
+    padding:8px 9px 7px;
+    min-width:0;
+  }
+  .dev[data-kind="card"]{border-top-color:var(--card);}
+  .dev[data-kind="dest"]{border-top-color:var(--dest);}
+  .dev[data-kind="aux"]{border-top-color:var(--aux); opacity:.5;}
+  .dev .dname{
+    font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--dim); margin-bottom:5px;
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .dev[data-kind="card"] .dname{color:var(--card);}
+  .dev[data-kind="dest"] .dname{color:var(--dest);}
+  .dev .twin{
+    font-size:8.5px; letter-spacing:.1em;
+    color:var(--dimmer);
+    border:1px solid var(--line-soft); border-radius:3px;
+    padding:1px 4px;
+  }
+  .dev .drow{
+    display:flex; justify-content:space-between; gap:6px;
+    font-size:11px; color:var(--dim);
+    line-height:1.65;
+    white-space:nowrap;
+  }
+  .dev .drow .v{color:var(--text); font-variant-numeric:tabular-nums;}
+  .dev .serial{color:var(--dimmer); font-size:10.5px; letter-spacing:.06em;}
+  .dev canvas{
+    display:block; width:100%; height:22px; margin-top:5px;
+  }
+  .dev .mbps{
+    font-variant-numeric:tabular-nums;
+    font-size:11.5px;
+  }
+
+  /* ---------- pipeline monitor ---------- */
+  .pipe{
+    margin:0 13px 13px;
+    border:1px solid var(--line);
+    border-radius:5px;
+    background:var(--panel);
+    padding:10px 12px 11px;
+  }
+  .pline{
+    display:grid;
+    grid-template-columns:118px 1fr 96px 84px 96px;
+    align-items:center; gap:10px;
+    line-height:2.0;
+    font-size:12px;
+    white-space:nowrap;
+  }
+  .pline .who{color:var(--dim);}
+  .pline.reader .who{color:var(--text);}
+  .pline[data-kind="dest"] .who{color:var(--dest);}
+  .pline[data-kind="aux"] .who{color:var(--aux); opacity:.5;}
+  .pline[data-kind="aux"]{opacity:.5;}
+  .bar{
+    height:7px; border-radius:2px;
+    background:var(--line-soft);
+    overflow:hidden;
+  }
+  .bar i{display:block; height:100%; width:0%; background:var(--dim); transition:width .18s linear;}
+  .pline.reader .bar i{background:var(--text);}
+  .pline[data-kind="dest"] .bar i{background:var(--dest);}
+  .num{font-variant-numeric:tabular-nums; color:var(--text); font-size:11.5px;}
+  .sub{color:var(--dim); font-size:11px; overflow:hidden; text-overflow:ellipsis;}
+  .qcells{letter-spacing:.12em; font-size:12px; color:var(--dest);}
+  .blocking{
+    color:var(--warn); font-size:10.5px; letter-spacing:.08em;
+    opacity:0; transition:opacity .15s;
+  }
+  .blocking.on{opacity:1;}
+
+  /* ---------- log ---------- */
+  .logwrap{margin:0 13px 13px;}
+  .logbar{
+    display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+    padding-bottom:7px;
+  }
+  .chip{
+    font-family:var(--mono); font-size:10px; letter-spacing:.11em;
+    background:transparent; color:var(--dim);
+    border:1px solid var(--line); border-radius:3px;
+    padding:3px 8px; cursor:pointer;
+  }
+  .chip:hover{border-color:var(--dim);}
+  .chip:focus-visible{outline:2px solid var(--card); outline-offset:2px;}
+  .chip.on{color:var(--text); border-color:var(--dim); background:var(--panel2);}
+  .chip .ct{color:var(--dimmer); margin-left:5px;}
+  .logbar input{
+    flex:1; min-width:120px;
+    font-family:var(--mono); font-size:11.5px;
+    background:var(--panel2); color:var(--text);
+    border:1px solid var(--line); border-radius:3px;
+    padding:4px 8px;
+  }
+  .logbar input:focus{outline:none; border-color:var(--dim);}
+
+  .log{
+    height:290px; overflow-y:auto;
+    background:#080B10;
+    border:1px solid var(--line);
+    border-radius:5px;
+    padding:7px 0;
+    font-size:11.5px;
+    line-height:1.62;
+    scrollbar-width:thin;
+    scrollbar-color:var(--line) transparent;
+  }
+  .log::-webkit-scrollbar{width:9px;}
+  .log::-webkit-scrollbar-thumb{background:var(--line); border-radius:5px;}
+  .log::-webkit-scrollbar-track{background:transparent;}
+
+  .lr{
+    display:grid;
+    grid-template-columns:88px 44px 62px 1fr;
+    gap:9px;
+    padding:0 11px;
+    white-space:pre;
+  }
+  .lr:hover{background:rgba(255,255,255,.028);}
+  .lr .t{color:var(--dimmer); font-variant-numeric:tabular-nums;}
+  .lr .st{color:var(--dimmer);}
+  .lr .m{color:var(--text); overflow:hidden; text-overflow:ellipsis;}
+  .lr .lv{letter-spacing:.05em;}
+  .lr[data-lv="INFO"] .lv{color:var(--dim);}
+  .lr[data-lv="INFO"] .m{color:var(--dim);}
+  .lr[data-lv="IO"]   .lv{color:var(--dimmer);}
+  .lr[data-lv="IO"]   .m{color:var(--dimmer);}
+  .lr[data-lv="PERF"] .lv{color:var(--dest);}
+  .lr[data-lv="PERF"] .m{color:var(--dim);}
+  .lr[data-lv="OK"]   .lv{color:var(--ok);}
+  .lr[data-lv="WARN"] .lv{color:var(--warn);}
+  .lr[data-lv="WARN"] .m{color:var(--warn);}
+  .lr[data-lv="ERR"]  .lv{color:var(--err);}
+  .lr[data-lv="ERR"]  .m{color:var(--err);}
+  .lr .hash{color:var(--dimmer);}
+
+  .logfoot{
+    display:flex; justify-content:space-between;
+    padding-top:6px; font-size:10.5px; color:var(--dimmer);
+  }
+  .logfoot .acts{display:flex; gap:14px;}
+  .logfoot a{color:var(--dimmer); text-decoration:none; border-bottom:1px dotted var(--line);}
+  .logfoot a:hover{color:var(--dim);}
+
+  /* ---------- verdict ---------- */
+  .verdict{
+    border-top:1px solid var(--line);
+    background:var(--panel);
+    padding:15px 16px;
+    transition:background .3s;
+  }
+  .verdict .vhead{
+    display:flex; align-items:baseline; gap:12px;
+    font-size:22px; letter-spacing:.06em; font-weight:600;
+    color:var(--dimmer);
+    transition:color .3s;
+  }
+  .verdict .vglyph{font-size:17px;}
+  .verdict .vsub{
+    margin-top:6px; font-size:11.5px; color:var(--dim);
+    font-variant-numeric:tabular-nums;
+  }
+  .verdict .vsub .sep{color:var(--dimmer); padding:0 5px;}
+  .verdict[data-state="ok"]{background:rgba(70,196,106,.07); border-top-color:rgba(70,196,106,.35);}
+  .verdict[data-state="ok"] .vhead{color:var(--ok);}
+  .verdict[data-state="warn"]{background:rgba(224,167,44,.07); border-top-color:rgba(224,167,44,.35);}
+  .verdict[data-state="warn"] .vhead{color:var(--warn);}
+  .verdict[data-state="err"]{background:rgba(242,86,91,.08); border-top-color:rgba(242,86,91,.4);}
+  .verdict[data-state="err"] .vhead{color:var(--err);}
+
+  .note{
+    margin-top:14px; font-size:11.5px; color:var(--dimmer); line-height:1.75;
+  }
+  .note b{color:var(--dim); font-weight:400;}
+
+  @media (max-width:900px){
+    .devices{grid-template-columns:repeat(2,1fr);}
+    .pline{grid-template-columns:96px 1fr 78px; }
+    .pline .num.q, .pline .blocking{display:none;}
+    .lr{grid-template-columns:70px 40px 1fr; }
+    .lr .st{display:none;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    *{transition-duration:.01ms !important;}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="scaffold">
+    <span class="tag">mockup controls</span>
+    <button id="btn-clean" class="active">Run — clean</button>
+    <button id="btn-twin">Run — card 2 diverges</button>
+    <button id="btn-partial">Run — missing twin</button>
+    <button id="btn-reset">Reset</button>
+  </div>
+
+  <div class="app">
+
+    <div class="titlebar">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="name">sluice</span>
+      <span class="ver">0.1.0</span>
+      <span class="spacer"></span>
+      <span class="sess">session 2026-03-14 &nbsp;·&nbsp; Kandahar Lodge</span>
+    </div>
+
+    <div class="section-label">Sources &amp; destinations</div>
+    <div class="paths">
+      <div class="prow" data-kind="card"><span class="lbl">CARD 1</span><span class="field">E:\</span><span class="meta">SONY_A <b>·</b> exFAT <b>·</b> 1F3B9C04</span></div>
+      <div class="prow" data-kind="card"><span class="lbl">CARD 2</span><span class="field">F:\</span><span class="meta">SONY_B <b>·</b> exFAT <b>·</b> 90C4A711</span></div>
+      <div class="prow" data-kind="dest"><span class="lbl">DEST A</span><span class="field">D:\Shoot\2026-03-14</span><span class="meta">MT-A <b>·</b> exFAT <b>·</b> 3A2F0D18</span></div>
+      <div class="prow" data-kind="dest"><span class="lbl">DEST B</span><span class="field">G:\Shoot\2026-03-14</span><span class="meta">MT-B <b>·</b> exFAT <b>·</b> 7C190B4E</span></div>
+      <div class="prow off" data-kind="aux"><span class="lbl">DEST C</span><span class="field">C:\Shoot\2026-03-14 &nbsp;— optional</span><span class="meta">612 GB free</span></div>
+    </div>
+
+    <div class="section-label">Devices</div>
+    <div class="devices" id="devices"></div>
+
+    <div class="section-label">Pipeline</div>
+    <div class="pipe" id="pipe"></div>
+
+    <div class="section-label">Log</div>
+    <div class="logwrap">
+      <div class="logbar" id="chips"></div>
+      <div class="log" id="log"></div>
+      <div class="logfoot">
+        <span id="logcount">0 rows · ring buffer 50,000 · streaming to sluice_2026-03-14.jsonl</span>
+        <span class="acts">
+          <a href="#" onclick="return false;">copy filtered</a>
+          <a href="#" onclick="return false;">export session bundle</a>
+          <a href="#" onclick="return false;">--trace</a>
+        </span>
+      </div>
+    </div>
+
+    <div class="verdict" id="verdict" data-state="idle">
+      <div class="vhead"><span class="vglyph" id="vglyph">○</span><span id="vtext">IDLE</span></div>
+      <div class="vsub" id="vsub">No session running. Select sources and destinations, then Offload.</div>
+    </div>
+
+  </div>
+
+  <div class="note">
+    <b>Mockup, not the program.</b> Timings are compressed roughly 60× — a real 91 GB session runs about 17 minutes.
+    The log here renders every row into the DOM; the real pane virtualizes via <code>ScrollArea::show_rows</code>, which
+    is a performance floor rather than an optimization.
+  </div>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var TOTAL_FILES = 1613;
+  var TOTAL_BYTES = 91.4;           // GB
+  var CAP_ROWS    = 900;
+
+  var DEVICES = [
+    {id:"C1", kind:"card", name:"CARD 1", label:"SONY_A", serial:"1F3B9C04", cap:"238.4 GB", peak:295},
+    {id:"C2", kind:"card", name:"CARD 2", label:"SONY_B", serial:"90C4A711", cap:"238.4 GB", peak:291},
+    {id:"A",  kind:"dest", name:"DEST A", label:"MT-A",   serial:"3A2F0D18", cap:"3.61 TB",  peak:130},
+    {id:"B",  kind:"dest", name:"DEST B", label:"MT-B",   serial:"7C190B4E", cap:"3.61 TB",  peak:130},
+    {id:"C",  kind:"aux",  name:"DEST C", label:"—",      serial:"disabled", cap:"612 GB",   peak:0}
+  ];
+
+  var LEVELS = ["ALL","IO","PERF","OK","WARN","ERR"];
+
+  var rows = [], counts = {}, filter = "ALL", search = "";
+  var scenario = "clean", running = false, t = 0, timer = null;
+  var spark = {}, devState = {};
+
+  var logEl      = document.getElementById("log");
+  var chipsEl    = document.getElementById("chips");
+  var devicesEl  = document.getElementById("devices");
+  var pipeEl     = document.getElementById("pipe");
+  var verdictEl  = document.getElementById("verdict");
+  var vtextEl    = document.getElementById("vtext");
+  var vglyphEl   = document.getElementById("vglyph");
+  var vsubEl     = document.getElementById("vsub");
+  var logCountEl = document.getElementById("logcount");
+
+  /* ---------------- build device strip ---------------- */
+  DEVICES.forEach(function(d){
+    var el = document.createElement("div");
+    el.className = "dev";
+    el.setAttribute("data-kind", d.kind);
+    el.innerHTML =
+      '<div class="dname">' + d.name +
+        (d.kind !== "aux" ? '<span class="twin">TWIN ' + (d.kind === "card" ? "①②" : "AB") + '</span>' : '') +
+      '</div>' +
+      '<div class="drow"><span>' + d.label + '</span><span class="serial">' + d.serial + '</span></div>' +
+      '<div class="drow"><span>exFAT</span><span class="v">4096 B sec</span></div>' +
+      '<div class="drow"><span id="free-' + d.id + '">' + d.cap + '</span><span class="v mbps" id="mbps-' + d.id + '">—</span></div>' +
+      '<canvas id="spark-' + d.id + '" width="240" height="44"></canvas>';
+    devicesEl.appendChild(el);
+    spark[d.id] = { canvas: el.querySelector("canvas"), data: new Array(60).fill(0) };
+    devState[d.id] = { mbps: 0, q: 0 };
+  });
+
+  /* ---------------- build pipeline monitor ---------------- */
+  pipeEl.innerHTML =
+    '<div class="pline reader" data-kind="reader">' +
+      '<span class="who">reader · C1</span>' +
+      '<span class="bar"><i id="pbar-R"></i></span>' +
+      '<span class="num" id="pmb-R">—</span>' +
+      '<span class="num q">&nbsp;</span>' +
+      '<span class="sub" id="pfile-R">idle</span>' +
+    '</div>' +
+    ['A','B','C'].map(function(id){
+      var kind = id === "C" ? "aux" : "dest";
+      return '<div class="pline" data-kind="' + kind + '">' +
+        '<span class="who">&nbsp;&nbsp;├─ writer ' + id + '</span>' +
+        '<span class="bar"><i id="pbar-' + id + '"></i></span>' +
+        '<span class="num" id="pmb-' + id + '">—</span>' +
+        '<span class="num q qcells" id="pq-' + id + '">░░░░ 0/4</span>' +
+        '<span class="blocking" id="pblk-' + id + '">◀ BLOCKING</span>' +
+      '</div>';
+    }).join("");
+
+  /* ---------------- filter chips ---------------- */
+  LEVELS.forEach(function(lv){
+    counts[lv] = 0;
+    var b = document.createElement("button");
+    b.className = "chip" + (lv === "ALL" ? " on" : "");
+    b.setAttribute("data-lv", lv);
+    b.innerHTML = lv + '<span class="ct" id="ct-' + lv + '">0</span>';
+    b.onclick = function(){
+      filter = lv;
+      Array.prototype.forEach.call(chipsEl.querySelectorAll(".chip"), function(c){
+        c.classList.toggle("on", c.getAttribute("data-lv") === lv);
+      });
+      render();
+    };
+    chipsEl.appendChild(b);
+  });
+  var srch = document.createElement("input");
+  srch.type = "text";
+  srch.placeholder = "filter rows…";
+  srch.oninput = function(){ search = this.value.toLowerCase(); render(); };
+  chipsEl.appendChild(srch);
+
+  /* ---------------- log plumbing ---------------- */
+  function clock(sec){
+    var base = 22*3600 + 14*60 + 3.114 + sec;
+    var h = Math.floor(base/3600), m = Math.floor((base%3600)/60), s = base%60;
+    return String(h).padStart(2,"0") + ":" + String(m).padStart(2,"0") + ":" +
+           (s < 10 ? "0" : "") + s.toFixed(3);
+  }
+
+  function log(lv, stage, msg){
+    rows.push({ t: clock(t*0.06*60), lv: lv, st: stage, m: msg });
+    counts[lv] = (counts[lv]||0) + 1;
+    counts.ALL++;
+    if (rows.length > 4000) rows.splice(0, 1200);
+  }
+
+  function passes(r){
+    if (filter !== "ALL" && r.lv !== filter) return false;
+    if (search && (r.m + r.st + r.lv).toLowerCase().indexOf(search) === -1) return false;
+    return true;
+  }
+
+  function render(){
+    var vis = [], i;
+    for (i = rows.length - 1; i >= 0 && vis.length < CAP_ROWS; i--){
+      if (passes(rows[i])) vis.push(rows[i]);
+    }
+    vis.reverse();
+    var html = "";
+    for (i = 0; i < vis.length; i++){
+      var r = vis[i];
+      html += '<div class="lr" data-lv="' + r.lv + '">' +
+        '<span class="t">' + r.t + '</span>' +
+        '<span class="lv">' + r.lv + '</span>' +
+        '<span class="st">' + r.st + '</span>' +
+        '<span class="m">' + r.m + '</span></div>';
+    }
+    logEl.innerHTML = html;
+    logEl.scrollTop = logEl.scrollHeight;
+    LEVELS.forEach(function(lv){
+      var e = document.getElementById("ct-" + lv);
+      if (e) e.textContent = (counts[lv]||0).toLocaleString();
+    });
+    logCountEl.textContent = (counts.ALL||0).toLocaleString() +
+      " rows · ring buffer 50,000 · streaming to sluice_2026-03-14.jsonl";
+  }
+
+  /* ---------------- sparklines ---------------- */
+  function drawSpark(id, color){
+    var s = spark[id], c = s.canvas, ctx = c.getContext("2d");
+    var w = c.width, h = c.height, n = s.data.length;
+    ctx.clearRect(0,0,w,h);
+    var max = Math.max.apply(null, s.data.concat([1]));
+    ctx.beginPath();
+    for (var i = 0; i < n; i++){
+      var x = (i/(n-1))*w;
+      var y = h - (s.data[i]/max)*(h-3) - 1.5;
+      if (i === 0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+    }
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.lineTo(w,h); ctx.lineTo(0,h); ctx.closePath();
+    ctx.fillStyle = color.replace(")", ",.10)").replace("rgb","rgba");
+    ctx.fill();
+  }
+
+  var HUE = {
+    C1:"rgb(53,214,192)", C2:"rgb(53,214,192)",
+    A:"rgb(139,147,248)", B:"rgb(139,147,248)", C:"rgb(107,118,134)"
+  };
+
+  function pushSpark(id, v){
+    var s = spark[id];
+    s.data.push(v); s.data.shift();
+    drawSpark(id, HUE[id]);
+  }
+
+  function setDev(id, mbps){
+    devState[id].mbps = mbps;
+    var e = document.getElementById("mbps-" + id);
+    if (e) e.textContent = mbps > 0 ? mbps.toFixed(0) + " MB/s" : "—";
+    pushSpark(id, mbps);
+  }
+
+  function setPipe(id, pct, mbps, q, blocking, sub){
+    var bar = document.getElementById("pbar-" + id);
+    if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+    var mb = document.getElementById("pmb-" + id);
+    if (mb) mb.textContent = mbps > 0 ? mbps.toFixed(0) + " MB/s" : "—";
+    if (q !== null && q !== undefined){
+      var qe = document.getElementById("pq-" + id);
+      if (qe) qe.textContent = "█".repeat(q) + "░".repeat(4-q) + " " + q + "/4";
+    }
+    var bl = document.getElementById("pblk-" + id);
+    if (bl) bl.classList.toggle("on", !!blocking);
+    if (sub !== undefined){
+      var se = document.getElementById("pfile-" + id);
+      if (se) se.textContent = sub;
+    }
+  }
+
+  function setVerdict(state, glyph, text, sub){
+    verdictEl.setAttribute("data-state", state);
+    vglyphEl.textContent = glyph;
+    vtextEl.textContent = text;
+    vsubEl.innerHTML = sub;
+  }
+
+  /* ---------------- simulation ---------------- */
+  function fname(i){ return "DSC" + String(i).padStart(5,"0") + ".ARW"; }
+  function hex(n){ return Math.abs(Math.floor(n)).toString(16).padStart(8,"0").slice(0,8); }
+
+  var fileIdx = 0, copied = 0, verified = 0, badFile = 0, lastPerf = 0;
+
+  function reset(){
+    clearInterval(timer); timer = null; running = false; t = 0;
+    rows = []; counts = {}; LEVELS.forEach(function(l){ counts[l] = 0; });
+    fileIdx = 0; copied = 0; verified = 0; lastPerf = 0;
+    badFile = 900 + Math.floor(Math.random()*400);
+    DEVICES.forEach(function(d){ spark[d.id].data = new Array(60).fill(0); setDev(d.id, 0); });
+    ["R","A","B","C"].forEach(function(id){ setPipe(id, 0, 0, 0, false, id === "R" ? "idle" : undefined); });
+    setVerdict("idle","○","IDLE","No session running. Select sources and destinations, then Offload.");
+    render();
+  }
+
+  function start(mode){
+    reset();
+    scenario = mode; running = true;
+    Array.prototype.forEach.call(document.querySelectorAll(".scaffold button"), function(b){ b.classList.remove("active"); });
+    document.getElementById("btn-" + (mode === "clean" ? "clean" : mode === "twin" ? "twin" : "partial")).classList.add("active");
+    timer = setInterval(tick, 80);
+  }
+
+  function tick(){
+    t += 0.08;
+
+    /* --- SCAN --- */
+    if (t > 0.10 && t < 0.18){
+      log("INFO","scan","card 1 (1F3B9C04): 1,613 files, 91.4 GB in 812 ms");
+      log("INFO","scan","card 2 (90C4A711): " + (scenario === "partial" ? "1,609" : "1,613") + " files, 91.4 GB in 799 ms");
+    }
+    /* --- RECONCILE --- */
+    if (t > 0.42 && t < 0.50){
+      if (scenario === "partial"){
+        log("WARN","recon","file lists differ — 4 files present on card 1 only");
+        log("WARN","recon","DSC01610.ARW … DSC01613.ARW — card 2 filled mid-session");
+        log("WARN","recon","copying union; 4 files will be UNVERIFIED against a twin");
+      } else {
+        log("OK","recon","file lists identical — 1,613 matched, 0 divergent");
+      }
+    }
+    /* --- PREFLIGHT --- */
+    if (t > 0.72 && t < 0.80){
+      log("INFO","pre","D:\\ 3.61 TB free, need 91.4 GB — ok");
+      log("INFO","pre","G:\\ 3.61 TB free, need 91.4 GB — ok");
+      log("WARN","pre","dest A and dest B are the same model (LaCie STFR4000800)");
+      log("INFO","pre","serials differ (3A2F0D18 / 7C190B4E) — distinct devices, ok");
+      log("INFO","pre","sector size 4096 B on all targets — aligned reads ok");
+      log("INFO","power","ES_CONTINUOUS | ES_SYSTEM_REQUIRED asserted");
+      setVerdict("idle","◔","RUNNING","Preflight complete <span class='sep'>·</span> 1,613 files <span class='sep'>·</span> 91.4 GB queued");
+    }
+
+    /* --- COPY --- */
+    if (t > 1.0 && copied < TOTAL_FILES){
+      var perTick = 14;
+      var jitterA = 128 + Math.sin(t*1.7)*4 + (Math.random()*3-1.5);
+      var jitterB = 131 + Math.cos(t*1.3)*4 + (Math.random()*3-1.5);
+      var qA = jitterA < jitterB ? 3 + (Math.random() > .6 ? 1 : 0) : 1;
+      var qB = jitterA < jitterB ? 1 : 3;
+
+      for (var k = 0; k < perTick && copied < TOTAL_FILES; k++){
+        fileIdx++; copied++;
+        if (copied % 37 === 0){
+          log("IO","copy","open  DCIM/100MSDCF/" + fname(fileIdx) + "  62,914,560 B");
+        }
+        if (copied % 11 === 0){
+          log("OK","copy", fname(fileIdx) + "  1.008s  A ok  B ok  xxh " +
+            '<span class="hash">' + hex(fileIdx*2654435761) + '…</span>');
+        }
+      }
+
+      var pct = (copied/TOTAL_FILES)*100;
+      setDev("C1", 305 + Math.sin(t*2)*12); setDev("C2", 0);
+      setDev("A", jitterA); setDev("B", jitterB);
+      setPipe("R", pct, 305, null, false, fname(fileIdx) + "   41.2 / 62.9 MB");
+      setPipe("A", pct, jitterA, qA, qA >= 3, undefined);
+      setPipe("B", pct, jitterB, qB, qB >= 3, undefined);
+
+      var gb = (copied/TOTAL_FILES*TOTAL_BYTES);
+      document.getElementById("free-A").textContent = (3610 - gb).toFixed(0)/1000 + " TB free";
+      document.getElementById("free-B").textContent = (3610 - gb).toFixed(0)/1000 + " TB free";
+
+      if (t - lastPerf > 0.9){
+        lastPerf = t;
+        log("PERF","copy","A " + jitterA.toFixed(1) + " MB/s  B " + jitterB.toFixed(1) +
+            " MB/s  q " + qA + "/4," + qB + "/4  " + gb.toFixed(1) + "/91.4 GB");
+      }
+      if (copied >= TOTAL_FILES){
+        log("OK","copy","1,613 files written to 2 destinations in 8m 12s");
+        log("INFO","copy","sync_all issued on all handles — mean 41 ms");
+        ["A","B"].forEach(function(id){ setPipe(id, 100, 0, 0, false, undefined); });
+        setPipe("R", 100, 0, null, false, "copy complete");
+      }
+    }
+
+    /* --- VERIFY --- */
+    if (copied >= TOTAL_FILES && verified < TOTAL_FILES){
+      if (verified === 0){
+        log("INFO","verify","opening 4 readers with FILE_FLAG_NO_BUFFERING");
+        log("INFO","verify","C1, C2, A, B hashing concurrently — page cache bypassed");
+      }
+      var pt = 15;
+      for (var j = 0; j < pt && verified < TOTAL_FILES; j++){
+        verified++;
+        var isBad = (scenario === "twin" && verified === badFile);
+        if (isBad){
+          log("ERR","verify", fname(verified) + "  C1 " + hex(verified*7919) + " ≠ C2 " + hex(verified*104729));
+          log("ERR","verify","→ C1 matches A and B; C2 disagrees with all three");
+          log("ERR","verify","→ CARD 2 (90C4A711) IS SUSPECT — do not format either card");
+        } else if (verified % 9 === 0){
+          log("OK","verify", fname(verified) + "  C1 " + hex(verified*7919) +
+              " = C2 = A = B   ✓");
+        }
+      }
+      var vp = (verified/TOTAL_FILES)*100;
+      setDev("C1", 288 + Math.sin(t*2.1)*10);
+      setDev("C2", 291 + Math.cos(t*1.9)*10);
+      setDev("A", 129 + Math.sin(t*1.4)*3);
+      setDev("B", 130 + Math.cos(t*1.6)*3);
+      setPipe("R", vp, 288, null, false, "verify — 4 concurrent hashers");
+      setPipe("A", vp, 129, 0, false, undefined);
+      setPipe("B", vp, 130, 0, false, undefined);
+      setVerdict("idle","◕","VERIFYING",
+        "Twin-hashing C1 · C2 · A · B <span class='sep'>·</span> " +
+        verified.toLocaleString() + " / 1,613 files");
+
+      if (verified >= TOTAL_FILES) finish();
+    }
+  }
+
+  function finish(){
+    clearInterval(timer); timer = null; running = false;
+    DEVICES.forEach(function(d){ setDev(d.id, 0); });
+    ["R","A","B","C"].forEach(function(id){ setPipe(id, 100, 0, 0, false, id === "R" ? "done" : undefined); });
+
+    if (scenario === "twin"){
+      log("ERR","verdict","1 file failed twin comparison — manifest NOT written");
+      log("ERR","verdict","retire card 2 (90C4A711) for the rest of the shoot");
+      setVerdict("err","✕","FAILED",
+        "Card 2 disagrees with card 1 on " + fname(badFile) +
+        " <span class='sep'>·</span> do not format either card" +
+        "<br>copy 8m12s <span class='sep'>·</span> verify 8m31s <span class='sep'>·</span> 1,612 / 1,613 clean");
+    } else if (scenario === "partial"){
+      log("OK","manifest","sluice_2026-03-14.mhl written to D:\\ and G:\\ — 1,613 entries");
+      log("WARN","verdict","4 files have no twin — format verdict withheld");
+      setVerdict("warn","!","VERIFIED — DO NOT FORMAT",
+        "1,613 files on 2 distinct volumes <span class='sep'>·</span> 4 files unverified against a twin" +
+        "<br>copy 8m12s <span class='sep'>·</span> verify 8m31s <span class='sep'>·</span> 17m03s total <span class='sep'>·</span> avg 129 MB/s");
+    } else {
+      log("OK","manifest","sluice_2026-03-14.mhl written to D:\\ and G:\\ — 1,613 entries");
+      log("OK","manifest","sluice_2026-03-14.json session log closed — 47,206 events");
+      log("INFO","power","ES_SYSTEM_REQUIRED released");
+      log("OK","verdict","all 1,613 files matched across C1, C2, A, B");
+      setVerdict("ok","✓","SAFE TO FORMAT",
+        "1,613 files <span class='sep'>·</span> 91.4 GB <span class='sep'>·</span> twin-matched <span class='sep'>·</span> 2 distinct volumes" +
+        "<br>copy 8m12s <span class='sep'>·</span> verify 8m31s <span class='sep'>·</span> 17m03s total <span class='sep'>·</span> avg 129 MB/s");
+    }
+    render();
+  }
+
+  /* render loop for the log, decoupled from the sim tick */
+  setInterval(function(){ if (running) render(); }, 140);
+
+  document.getElementById("btn-clean").onclick   = function(){ start("clean"); };
+  document.getElementById("btn-twin").onclick    = function(){ start("twin"); };
+  document.getElementById("btn-partial").onclick = function(){ start("partial"); };
+  document.getElementById("btn-reset").onclick   = function(){ reset(); };
+
+  reset();
+  setTimeout(function(){ start("clean"); }, 400);
+})();
+</script>
+</body>
+</html>
