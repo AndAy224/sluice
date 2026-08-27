@@ -8,6 +8,55 @@ on whether the originals are safe to erase.
 Design: [sluice-plan-rev2.md](sluice-plan-rev2.md). This file records what is
 built and what is not. Threat model: [SECURITY.md](SECURITY.md).
 
+## What it looks like
+
+Real screenshots of a real run, not mockups — which matters for a program whose
+whole argument is that an unproven claim is treated like a disproven one.
+
+![Two cards and a destination chosen, each row resolved live to its label,
+filesystem, volume serial and physical disk number](docs/screenshots/01-setup.png)
+
+Every row resolves **live**, before anything starts. Two identical drives swap
+letters between plug-ins, so the letter is the least trustworthy thing on the
+line and the serial is the most.
+
+![The copy phase: one read of card 1 fanned out to the destination, with queue
+occupancy full and the destination marked as blocking](docs/screenshots/02-copy.png)
+
+One read of the card, fanned out to every destination over bounded channels.
+The queue occupancy (`4/4`) and **BLOCKING** marker name *which device is
+applying backpressure* — the actual answer to "why is this slow".
+
+![The verify phase: four concurrent unbuffered hashers, the two cards finished
+and the two slower drives still running, with the total and time
+remaining](docs/screenshots/03-verify.png)
+
+Verify re-reads **every** copy off the physical media with the page cache
+bypassed — both cards and every destination — so on a two-card, two-drive night
+it moves four times the bytes the copy did: `31.21 GB of 53.58 GB` here, not
+13.40. The hashers do not finish together, and it says so: the cards sit on fast
+internal disks and are done inside a minute while the USB drives grind on. Each
+log line names the agreement it found — `C1 5a52d5f6 = C2 = A = B`.
+
+![The verdict banner reading SAFE TO FORMAT, with the four things that were
+proven](docs/screenshots/04-safe-to-format.png)
+
+The one verdict that authorises erasing the originals, and the only one that
+exits `0`. Reaching it needs two cards that agree with each other, two
+destinations that agree, and proof from the OS that those destinations are
+different *physical* drives. `Record format…` writes down that you erased the
+cards — sluice never formats anything itself.
+
+The banner is pinned to the bottom so a long log can never push it off screen,
+and it carries its answer three ways — words, glyph and hue — so it survives
+greyscale and colour-vision deficiency:
+
+![The same banner reading VERIFIED — ONE COPY, refusing to authorise an
+erase](docs/screenshots/05-one-copy.png)
+
+Same run with one destination instead of two. Every byte verified, and it still
+refuses — one drive is one failure away from nothing.
+
 ## Running it
 
 ```

@@ -142,6 +142,9 @@ fn card(ui: &mut Ui, id: DeviceId, state: Option<&DeviceState>, width: f32, now:
 
     theme::panel_frame().show(ui, |ui| {
         ui.set_width(width);
+        // A cap as well as a floor. Without it the card grows to fit its
+        // longest row and the strip runs off the edge of the window.
+        ui.set_max_width(width);
         ui.vertical(|ui| {
             // The 2px pairing bar across the top of the card.
             let (bar, _) =
@@ -219,18 +222,29 @@ fn card(ui: &mut Ui, id: DeviceId, state: Option<&DeviceState>, width: f32, now:
 }
 
 /// A left label and a right value on one line, as the mockup lays them out.
+/// `label ............ value`, with the label giving way rather than the value.
+///
+/// Laid out right-to-left so the value is placed first and keeps its space; the
+/// label then truncates into whatever is left. Two plain labels in a horizontal
+/// layout instead set the row's width between them, and `set_width` on the card
+/// is a *minimum* rather than a cap — so a long volume label pushed every card
+/// wider than its share and the fifth fell off the right of the window. Caught
+/// while screenshotting: DEST B was clipped and DEST C was not on screen at all.
 fn row(ui: &mut Ui, left: &str, right: &str, right_colour: Color32) {
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(left)
-                .color(theme::DIM)
-                .font(theme::mono(theme::SMALL)),
-        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(right)
                     .color(right_colour)
                     .font(theme::mono(theme::SMALL)),
+            );
+            ui.add(
+                egui::Label::new(
+                    RichText::new(left)
+                        .color(theme::DIM)
+                        .font(theme::mono(theme::SMALL)),
+                )
+                .truncate(),
             );
         });
     });
