@@ -380,6 +380,13 @@ impl App {
         }
     }
 
+    /// Whether a cancel has been asked for and the job has not ended yet.
+    fn cancelling(&self) -> bool {
+        self.job
+            .as_ref()
+            .is_some_and(|j| j.cancel.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     /// Drain everything waiting, then decide whether the job has ended.
     fn drain(&mut self) {
         let (records, finished, drained) = {
@@ -437,6 +444,19 @@ impl App {
                     self.phase_started = self.elapsed;
                 }
                 self.phase = *phase;
+                // Cancelling no longer ends the moment the writers stop: every
+                // file already copied still has to be flushed and stamped, or a
+                // resumed run would copy the whole card again. On a card of
+                // stills that tail is not instant, and the standing message --
+                // "partial destination files are being removed" -- would be
+                // describing the opposite of what the drive is doing.
+                if *phase == Phase::Flush && self.cancelling() {
+                    self.status = Some(
+                        "cancelling — finishing the files already copied so a resumed run can \
+                         skip them"
+                            .into(),
+                    );
+                }
             }
             Event::Device { id, info } => {
                 self.devices.entry(*id).or_default().info = Some((**info).clone());

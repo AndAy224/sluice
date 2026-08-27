@@ -47,6 +47,14 @@ pub enum Phase {
     Reconcile,
     Preflight,
     Copy,
+    /// Every file written, now being forced onto the platter.
+    ///
+    /// Its own phase because it moves no bytes and takes real time -- a few
+    /// milliseconds a file, which is nothing on a card of video clips and over
+    /// a minute on one holding thirty thousand stills. Left inside `Copy` the
+    /// monitor read "about 0s left" for the whole of it, which is the same lie
+    /// verify's denominator used to tell.
+    Flush,
     Verify,
     Manifest,
     Verdict,
@@ -61,6 +69,7 @@ impl Phase {
             Self::Reconcile => "RECONCILE",
             Self::Preflight => "PREFLIGHT",
             Self::Copy => "COPY",
+            Self::Flush => "FLUSH",
             Self::Verify => "VERIFY",
             Self::Manifest => "MANIFEST",
             Self::Verdict => "VERDICT",

@@ -20,8 +20,11 @@
 //!   trips to the device -- which is the entire premise of the matrix row that
 //!   detects an unrepeatable read. It also keeps a 91 GB card from evicting
 //!   everything else from the page cache.
-//! * `sync_all()` before close forces the data out of the OS dirty list, so the
-//!   unbuffered verify read measures the drive rather than lazy writeback.
+//! * Every file is flushed to the device before the phase ends, so the
+//!   unbuffered verify read measures the drive rather than lazy writeback. The
+//!   flush happens on a separate thread per destination and only once the
+//!   writing is done -- see [`syncer_thread`], where the reason it is not done
+//!   per file is measured rather than asserted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -46,6 +49,25 @@ use super::DeviceId;
 /// Channel depth per destination. Four 4 MiB chunks is ~16 MiB in flight.
 const QUEUE_CAP: usize = 4;
 
+/// The queue of finished files awaiting their flush is deliberately unbounded.
+///
+/// Every other channel here is bounded, because every other channel carries
+/// data and a bound is what stops a fast reader outrunning a slow drive. This
+/// one carries a path and a timestamp, so a 30,000-file card costs a few
+/// megabytes.
+///
+/// Bounding it would also deadlock. `syncer_thread` does not drain as files
+/// arrive -- that is the whole point of it, see there -- so a bound of N stops
+/// the writer dead at file N+1 while the syncer waits for a channel that will
+/// never close. A cap of 4096 looks generous right up until somebody offloads a
+/// card with more pictures on it than that.
+fn sync_queue() -> (Sender<Finished>, Receiver<Finished>) {
+    crossbeam_channel::unbounded()
+}
+
+/// A file the writer is done with, waiting to be made durable and stamped.
+type Finished = (PathBuf, FileTime);
+
 /// How long a blocked send waits before re-checking the cancel flag.
 const SEND_POLL: Duration = Duration::from_millis(100);
 
@@ -65,7 +87,7 @@ impl Chunk {
 enum Msg {
     Open(PathBuf, u64),
     Chunk(Arc<Chunk>),
-    /// `sync_all`, then stamp the source mtime.
+    /// Done writing. The flush and the mtime happen later, on the syncer.
     Close(FileTime),
     /// Abandon the file in progress and delete the partial.
     Abandon,
@@ -366,6 +388,9 @@ where
             ),
         );
 
+        // Back to COPY: the pass just finished ended in FLUSH, and a retry that
+        // left the label there would have the window naming the wrong work.
+        tel.phase(super::telemetry::Phase::Copy);
         let pass = pass_fn(&retry_items, std::slice::from_ref(dest), tel, cancel)?;
         report.bytes_read += pass.bytes_read;
         report.cancelled |= pass.cancelled;
@@ -444,12 +469,25 @@ fn copy_pass(
 
     let report = std::thread::scope(|scope| -> Result<CopyReport> {
         let mut handles = Vec::new();
+        let mut syncers = Vec::new();
         for (dest, rx) in receivers {
+            // The flush runs on its own thread per destination, so a writer
+            // hands off a finished file and goes straight back to writing.
+            // See `syncer_thread` for why that is worth a second thread.
+            let (sync_tx, sync_rx) = sync_queue();
+            let sync_dest = dest.clone();
+            let sync_tel = tel.clone();
+            syncers.push(
+                std::thread::Builder::new()
+                    .name(format!("sluice-sync-{}", dest.dev.label()))
+                    .spawn_scoped(scope, move || syncer_thread(sync_dest, sync_rx, sync_tel))
+                    .context("spawning a sync thread")?,
+            );
             let tel = tel.clone();
             handles.push(
                 std::thread::Builder::new()
                     .name(format!("sluice-writer-{}", dest.dev.label()))
-                    .spawn_scoped(scope, move || writer_thread(dest, rx, tel))
+                    .spawn_scoped(scope, move || writer_thread(dest, rx, sync_tx, tel))
                     .context("spawning a writer thread")?,
             );
         }
@@ -462,10 +500,25 @@ fn copy_pass(
         drop(senders);
 
         let mut report = report;
+        // Writers first: each owns its sync sender, so joining them is what
+        // closes the sync queues and lets the syncers finish.
         for h in handles {
             match h.join() {
                 Ok(errors) => report.errors.extend(errors),
                 Err(_) => anyhow::bail!("a writer thread panicked"),
+            }
+        }
+        // Every byte is written; none of it is necessarily on a platter yet.
+        // Announced as its own phase because the monitor measures bytes and
+        // this part moves none: inside `Copy` it read "about 0s left" for as
+        // long as the flush took.
+        tel.phase(super::telemetry::Phase::Flush);
+        // The durability barrier. Nothing downstream -- least of all the
+        // unbuffered verify read -- may run until every flush has returned.
+        for h in syncers {
+            match h.join() {
+                Ok(errors) => report.errors.extend(errors),
+                Err(_) => anyhow::bail!("a sync thread panicked"),
             }
         }
         report
@@ -684,7 +737,12 @@ fn short_name(rel: &str) -> &str {
 /// the same decision would buy nothing and could tear down a file the reader
 /// still believes is open. The one place a flag could not help anyway is inside
 /// `sync_all`, which cannot be interrupted.
-fn writer_thread(dest: Destination, rx: Receiver<Msg>, tel: Telemetry) -> Vec<CopyError> {
+fn writer_thread(
+    dest: Destination,
+    rx: Receiver<Msg>,
+    sync_tx: Sender<Finished>,
+    tel: Telemetry,
+) -> Vec<CopyError> {
     let mut errors = Vec::new();
     let mut meter = ByteMeter::new(dest.dev);
     let mut open: Option<(File, PathBuf)> = None;
@@ -756,40 +814,15 @@ fn writer_thread(dest: Destination, rx: Receiver<Msg>, tel: Telemetry) -> Vec<Co
                     let _ = fs::remove_file(&path);
                     continue;
                 }
-                // Forces the bytes out of the OS dirty list, so the unbuffered
-                // verify read measures the drive and not lazy writeback.
-                let sync_started = Instant::now();
-                let sync = file.sync_all();
-                tel.trace(
-                    Stage::Copy,
-                    format!(
-                        "{} sync_all {} took {:.1} ms",
-                        dest.dev.label(),
-                        rel_of(&path),
-                        sync_started.elapsed().as_secs_f64() * 1000.0
-                    ),
-                );
-                if let Err(e) = sync {
-                    errors.push(CopyError {
-                        dev: dest.dev,
-                        rel: rel_of(&path),
-                        msg: format!("sync_all: {e}"),
-                    });
-                    let _ = fs::remove_file(&path);
-                    continue;
-                }
+                // The flush and the mtime both happen -- on the syncer, so this
+                // thread can start the next file while the drive commits this
+                // one. `copy_pass` joins the syncer before it returns, so the
+                // barrier is exactly where it always was.
                 drop(file);
-                if let Err(e) = filetime::set_file_mtime(&path, mtime) {
-                    // The bytes are right; only the timestamp is not. That costs
-                    // a needless re-copy on resume, nothing more.
-                    tel.warn(
-                        Stage::Copy,
-                        format!(
-                            "{} {}: could not set mtime: {e}",
-                            dest.dev.label(),
-                            rel_of(&path)
-                        ),
-                    );
+                if sync_tx.send((path, mtime)).is_err() {
+                    // Only reachable if the syncer has died, which it reports
+                    // for itself; the join surfaces it.
+                    break;
                 }
             }
             Msg::Abandon => {
@@ -811,6 +844,131 @@ fn writer_thread(dest: Destination, rx: Receiver<Msg>, tel: Telemetry) -> Vec<Co
         let _ = fs::remove_file(&path);
     }
     meter.flush(&tel);
+    errors
+}
+
+/// Makes each finished file durable, off the writer's critical path.
+///
+/// The flush is not optional. Verify re-reads unbuffered, so bytes still in the
+/// OS dirty list would be read back off a platter that does not hold them yet,
+/// and the strongest claim this program makes would be measuring the cache it
+/// exists to bypass.
+///
+/// What *was* optional is doing it between two writes. `FlushFileBuffers` makes
+/// the drive commit its cache -- 80 to 150 ms on a LaCie Rugged -- and a writer
+/// waiting on that is a writer sending nothing. A camera card is thousands of
+/// files, so this was the largest single cost in the copy phase. Through
+/// `run_copy`, 2 GiB to one LaCie:
+///
+/// | | 256 x 8 MiB | 2048 x 1 MiB |
+/// |---|---|---|
+/// | flushed per file, inline | 44.0 MB/s | 11.1 MB/s |
+/// | flushed here, after the writing | 80.8 MB/s | 69.5 MB/s |
+///
+/// The mtime is stamped only once **every** file on this destination is
+/// durable, and that ordering is load bearing rather than incidental. Resume
+/// trusts size and mtime (`already_present`), so a file wearing the source's
+/// mtime is a file resume will skip. Stamping one before its bytes are on the
+/// platter would open a window where a power cut leaves a full-length,
+/// correctly stamped, half-written file that resume skips and nothing
+/// re-copies. Two passes keep the failure pointing where it always pointed: no
+/// mtime, so copy it again.
+fn syncer_thread(dest: Destination, rx: Receiver<Finished>, tel: Telemetry) -> Vec<CopyError> {
+    let mut errors = Vec::new();
+    let rel_of = |path: &Path| -> String {
+        path.strip_prefix(&dest.root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/")
+    };
+
+    // Collect the whole pass before flushing any of it. Flushing as the files
+    // arrive is what the first attempt did, and it bought nothing: the flush
+    // and the writes then contend for the same drive, so lazy writeback never
+    // gets ahead and every flush pays a full cache commit. Draining first lets
+    // the OS retire most of the data on its own, which is what makes the flush
+    // pass cheap -- 2 ms a file rather than 150.
+    let pending: Vec<Finished> = rx.into_iter().collect();
+    if pending.is_empty() {
+        return errors;
+    }
+    let started = Instant::now();
+    tel.info(
+        Stage::Copy,
+        format!(
+            "{}: flushing {} file(s) to the device",
+            dest.dev.label(),
+            pending.len()
+        ),
+    );
+
+    // Pass one: every byte durable.
+    let mut durable: Vec<Finished> = Vec::with_capacity(pending.len());
+    for (path, mtime) in pending {
+        let file = match File::options().write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                errors.push(CopyError {
+                    dev: dest.dev,
+                    rel: rel_of(&path),
+                    msg: format!("reopen to flush: {e}"),
+                });
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+        };
+        if let Err(e) = file.sync_all() {
+            errors.push(CopyError {
+                dev: dest.dev,
+                rel: rel_of(&path),
+                msg: format!("sync_all: {e}"),
+            });
+            drop(file);
+            // An unflushed file is not a copy. Removing it keeps the drive
+            // holding only files that were actually written, and leaves resume
+            // with nothing to mistake for one.
+            let _ = fs::remove_file(&path);
+            continue;
+        }
+        durable.push((path, mtime));
+    }
+    let flushed = started.elapsed();
+
+    // Pass two, and separate from pass one on purpose. Stamping each file
+    // immediately after its own flush lands a metadata write on a file the
+    // drive has just committed, and forces a second commit for it: measured at
+    // 37 ms a file against 2 ms, which on a card full of small files costs more
+    // than everything else in the phase put together. Two passes keep the
+    // ordering that matters -- nothing wears the source mtime until every byte
+    // on this destination is on the platter -- and cost 4 ms a file.
+    //
+    // These stamps are deliberately not flushed. Losing one to a power cut
+    // leaves a file resume will copy again, which is the direction every rule
+    // here fails in.
+    for (path, mtime) in &durable {
+        if let Err(e) = filetime::set_file_mtime(path, *mtime) {
+            // The bytes are right and durable; only the timestamp is not. That
+            // costs a needless re-copy on resume, nothing more.
+            tel.warn(
+                Stage::Copy,
+                format!(
+                    "{} {}: could not set mtime: {e}",
+                    dest.dev.label(),
+                    rel_of(path)
+                ),
+            );
+        }
+    }
+    tel.trace(
+        Stage::Copy,
+        format!(
+            "{} flushed {} file(s) in {:.1}s, stamped in {:.1}s",
+            dest.dev.label(),
+            durable.len(),
+            flushed.as_secs_f64(),
+            started.elapsed().as_secs_f64() - flushed.as_secs_f64()
+        ),
+    );
     errors
 }
 
@@ -950,6 +1108,37 @@ mod tests {
         let sc = report.source_hashes["DCIM/100MSDCF/DSC00001.ARW"];
         let (dest_hash, _) = hash_unbuffered(&dest_path(&a, "DCIM/100MSDCF/DSC00001.ARW")).unwrap();
         assert_eq!(sc, dest_hash);
+    }
+
+    /// The flush queue must never make a writer wait.
+    ///
+    /// This is the one channel here that is unbounded, and it has to be.
+    /// `syncer_thread` deliberately does not drain until the writer has
+    /// finished, so a queue capped at N stops the writer dead at file N+1 while
+    /// the syncer waits on a channel that can now never close. That deadlock
+    /// needs no error, no slow drive and no unusual hardware -- only a card
+    /// with enough pictures on it. This queue was written `bounded(4096)`
+    /// first, which is a number that looks generous until you photograph a
+    /// wedding.
+    ///
+    /// `try_send` rather than `send` on purpose: against a bounded channel this
+    /// fails and names the reason, where `send` would simply hang the suite.
+    #[test]
+    fn the_flush_queue_never_makes_a_writer_wait() {
+        let (tx, rx) = sync_queue();
+        let card_full_of_stills = 50_000;
+        for i in 0..card_full_of_stills {
+            tx.try_send((PathBuf::from(format!("DSC{i:05}.JPG")), FileTime::zero()))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "the flush queue blocked after {i} files ({e}). It must be unbounded: \
+                         the syncer does not drain until the writer has finished, so a bound \
+                         deadlocks the copy on any card with more files than the bound."
+                    )
+                });
+        }
+        drop(tx);
+        assert_eq!(rx.into_iter().count(), card_full_of_stills);
     }
 
     #[test]

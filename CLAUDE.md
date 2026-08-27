@@ -66,7 +66,9 @@ what the integration tests drive.
   a source per file. It also infers what the camera was doing (backup / relay /
   split), which is what turns "1,613 files have no twin" into an explanation.
 - **`copy`** is one read of the source fanned out to N writer threads over bounded
-  channels. Chunks travel as `Arc<Chunk>`, so fan-out copies a pointer.
+  channels. Chunks travel as `Arc<Chunk>`, so fan-out copies a pointer. Each
+  destination also gets a *syncer* thread; see "The flush is the copy phase's
+  real cost" below before touching it.
 - **`verify`** re-reads everything and calls `diagnose`.
 - **`verdict`** turns the diagnoses into one of five states.
 
@@ -112,6 +114,70 @@ padded final sector.
 
 This is also why network destinations cannot contribute to a verdict: over SMB the
 flag is advisory. See `DriveType::verification_reaches_the_device`.
+
+### The flush is the copy phase's real cost
+
+Getting bytes onto a platter costs far more than writing them, and the shape of
+the flush decides the throughput of the whole phase. Three things were measured
+on a LaCie Rugged, 2 GiB each time, and each one is counter-intuitive enough
+that changing it back looks like a simplification:
+
+| | 256 × 8 MiB | 2048 × 1 MiB |
+|---|---|---|
+| `sync_all` per file, inline (the original) | 44.0 MB/s | 11.1 MB/s |
+| flush on a syncer thread, as files arrive | 44.9 MB/s | 12.0 MB/s |
+| flush after the writing, stamp per file | 55.0 MB/s | 14.5 MB/s |
+| **flush after the writing, stamp in a second pass** | **80.8 MB/s** | **69.5 MB/s** |
+
+So, in order:
+
+- **Flushing per file idles the drive.** `FlushFileBuffers` makes the device
+  commit its cache — 80–150 ms — and a writer waiting on that sends nothing.
+- **Moving it to a thread is not enough.** The flush then competes with the
+  writes for the same drive, lazy writeback never gets ahead, and every flush
+  still pays a full commit. `syncer_thread` therefore does *not* drain as files
+  arrive: it collects the whole pass, then flushes. That looks like a missing
+  optimisation and is the entire point.
+- **Stamping the mtime immediately after a file's own flush costs 37 ms a file
+  against 2 ms**, because the metadata write lands on a file the drive has just
+  committed and forces a second commit. Hence two passes: flush everything,
+  then stamp everything.
+
+The stamp order is a safety property, not a performance one. Resume trusts size
+and mtime, so nothing may wear the source mtime until its bytes are durable —
+otherwise a power cut leaves a full-length, correctly stamped, half-written file
+that resume skips and nothing re-copies. Two passes preserve that for the whole
+destination at once. The stamps themselves are deliberately not flushed: losing
+one means the file is copied again, which is the direction every rule here fails
+in.
+
+The flush queue is the one unbounded channel in the program, and has to be —
+the syncer does not drain until the writer has finished, so any bound deadlocks
+the copy on a card with more files than the bound.
+`the_flush_queue_never_makes_a_writer_wait` exists to say so, and uses
+`try_send` so a reintroduced bound fails the suite instead of hanging it.
+
+`Phase::Flush` is separate from `Phase::Copy` because it moves no bytes and the
+monitor measures bytes: inside `Copy` it read "about 0s left" for its whole
+duration, which is the lie verify's denominator used to tell.
+
+### What is *not* worth changing, measured
+
+Two plausible-looking optimisations were tested and rejected, so they do not get
+re-proposed:
+
+- **Pipelining the read and the hash.** On an NVMe it is worth 35% (4.0 → 5.4
+  GB/s), which is why it looks compelling. On the drives that actually gate a
+  run it is worth 2%: a LaCie reads at 139 MB/s and hashes at 14 GB/s, so the
+  hash is never the constraint. Chunk size is the same story — 4 MiB to 16 MiB
+  buys 4% on the drive and costs 4× the in-flight memory.
+- **Unbuffered destination writes.** Attractive because it would remove the
+  page-cache copy and the flush both. Measured at 2 GiB: buffered plus a flush
+  pass beats it at 8 MiB files (88.7 vs 78.0 MB/s) and ties at 1 MiB, so the
+  alignment and set-length complexity buys nothing.
+
+Beware benchmarking either of these at 512 MiB: everything fits in the write
+cache and unbuffered looks far better than it is.
 
 ### Telemetry has two consumers with different guarantees
 
