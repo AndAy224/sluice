@@ -459,6 +459,50 @@ fn copy_pass(
         anyhow::bail!("a copy needs at least one destination");
     }
 
+    // Which destinations still want each file, decided once for the pass.
+    //
+    // The reader used to ask this per file as it reached it, which meant the
+    // resume check ran twice over every file on every destination -- once in
+    // preflight's overwrite guard and again here -- and, more to the point,
+    // meant nothing could say how much work a destination actually had until
+    // the pass was over. A drive that resume let sit out half the card was
+    // still drawn against the whole of it.
+    let needed: Vec<Vec<usize>> = items
+        .iter()
+        .map(|item| {
+            (0..dests.len())
+                .filter(|&i| !already_present(&dests[i].root, item))
+                .collect()
+        })
+        .collect();
+    for (i, d) in dests.iter().enumerate() {
+        let bytes = items
+            .iter()
+            .zip(&needed)
+            .filter(|(_, n)| n.contains(&i))
+            .map(|(it, _)| it.size)
+            .sum();
+        tel.emit(Event::DevicePlan { dev: d.dev, bytes });
+    }
+    // And what the reader will lift off each card. A file every destination
+    // already holds is never opened, so it is not work the source has to do.
+    for card in DeviceId::CARDS {
+        // A card that supplies nothing is not part of this pass and says
+        // nothing. A card that supplies files but has none left to read has
+        // finished, and has to say so as zero -- silence would leave its row
+        // drawn empty for a pass it had no work in.
+        if !items.iter().any(|it| it.src_dev == card) {
+            continue;
+        }
+        let bytes: u64 = items
+            .iter()
+            .zip(&needed)
+            .filter(|(it, n)| it.src_dev == card && !n.is_empty())
+            .map(|(it, _)| it.size)
+            .sum();
+        tel.emit(Event::DevicePlan { dev: card, bytes });
+    }
+
     let mut senders: Vec<(DeviceId, Sender<Msg>)> = Vec::new();
     let mut receivers: Vec<(Destination, Receiver<Msg>)> = Vec::new();
     for d in dests {
@@ -492,7 +536,7 @@ fn copy_pass(
             );
         }
 
-        let report = reader_loop(items, dests, &senders, tel, cancel);
+        let report = reader_loop(items, dests, &needed, &senders, tel, cancel);
 
         for (_, tx) in &senders {
             let _ = tx.send(Msg::Stop);
@@ -533,6 +577,7 @@ fn copy_pass(
 fn reader_loop(
     items: &[CopyItem],
     dests: &[Destination],
+    needed: &[Vec<usize>],
     senders: &[(DeviceId, Sender<Msg>)],
     tel: &Telemetry,
     cancel: &AtomicBool,
@@ -547,10 +592,10 @@ fn reader_loop(
             break;
         }
 
-        // Resume: whichever destinations already hold this file sit this one out.
-        let needed: Vec<usize> = (0..dests.len())
-            .filter(|&i| !already_present(&dests[i].root, item))
-            .collect();
+        // Resume: whichever destinations already hold this file sit this one
+        // out. Decided in `copy_pass`, so the plan the monitor draws against
+        // and the work actually done are one answer rather than two.
+        let needed = &needed[idx];
         if needed.is_empty() {
             report.skipped_resume.push(item.rel.clone());
             tel.log(
@@ -565,6 +610,7 @@ fn reader_loop(
             idx,
             rel: item.rel.clone(),
             size: item.size,
+            src: item.src_dev,
         });
         let started = Instant::now();
 
@@ -579,7 +625,7 @@ fn reader_loop(
         let dest_path_for = |i: usize| dest_path(&dests[i].root, &item.rel);
         let mut opened: Vec<usize> = Vec::new();
         let mut aborted = false;
-        for &i in &needed {
+        for &i in needed {
             if !send_blocking(
                 &senders[i].1,
                 Msg::Open(dest_path_for(i), item.size),
@@ -1139,6 +1185,124 @@ mod tests {
         }
         drop(tx);
         assert_eq!(rx.into_iter().count(), card_full_of_stills);
+    }
+
+    /// Resume is what makes the destinations diverge, and one shared bar could
+    /// not draw it.
+    ///
+    /// The monitor used to give every row the reader's position through the
+    /// file list. On a fresh card that is honest -- the fan-out holds the
+    /// destinations within one queue of each other -- but a resumed run gives
+    /// each drive a different amount of work, and the drive that had half the
+    /// card already was still drawn against the whole of it. So each
+    /// destination says what it owes, and the totals have to differ here or
+    /// nothing downstream can tell the two drives apart.
+    #[test]
+    fn a_resumed_run_plans_each_destination_separately() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = dir.path().join("card");
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+
+        let items = vec![
+            item(&card, "DCIM/ONE.ARW", &vec![1u8; 1000]),
+            item(&card, "DCIM/TWO.ARW", &vec![2u8; 2000]),
+        ];
+
+        // A already holds ONE, byte-identical and stamped, which is what an
+        // interrupted run leaves behind. Stamped rather than written quickly:
+        // `Mtime::matches` has a two-second tolerance, so a test whose premise
+        // is "resume cannot tell these apart" has to construct that premise.
+        let landed = dest_path(&a, "DCIM/ONE.ARW");
+        fs::create_dir_all(landed.parent().unwrap()).unwrap();
+        fs::copy(&items[0].src, &landed).unwrap();
+        let m = fs::metadata(&items[0].src).unwrap();
+        filetime::set_file_mtime(&landed, FileTime::from_last_modification_time(&m)).unwrap();
+
+        let dests = vec![
+            Destination {
+                dev: DeviceId::DestA,
+                root: a.clone(),
+            },
+            Destination {
+                dev: DeviceId::DestB,
+                root: b.clone(),
+            },
+        ];
+        let (tel, rx) = Telemetry::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_copy(&items, &dests, &tel, &cancel).unwrap();
+        drop(tel);
+
+        let plans: BTreeMap<DeviceId, u64> = rx
+            .iter()
+            .filter_map(|r| match r.event {
+                Event::DevicePlan { dev, bytes } => Some((dev, bytes)),
+                _ => None,
+            })
+            .collect();
+
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(
+            report.skipped_resume,
+            Vec::<String>::new(),
+            "B still needs ONE"
+        );
+        assert_eq!(plans[&DeviceId::DestA], 2000, "A already holds ONE");
+        assert_eq!(plans[&DeviceId::DestB], 3000, "B holds neither");
+        // The reader opens a file if *any* destination wants it, so it lifts
+        // both off the card even though A sits one of them out.
+        assert_eq!(plans[&DeviceId::Card1], 3000, "the reader reads both");
+    }
+
+    /// A destination resume left with nothing to do reports zero, and a zero
+    /// plan is what lets the monitor draw it as finished rather than as stalled
+    /// at the start line. Silence would be indistinguishable from "not told
+    /// yet", which is drawn empty.
+    #[test]
+    fn a_destination_with_nothing_left_to_copy_still_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let card = dir.path().join("card");
+        let a = dir.path().join("a");
+        fs::create_dir_all(&a).unwrap();
+        let items = vec![item(&card, "DCIM/ONE.ARW", b"already there")];
+
+        let landed = dest_path(&a, "DCIM/ONE.ARW");
+        fs::create_dir_all(landed.parent().unwrap()).unwrap();
+        fs::copy(&items[0].src, &landed).unwrap();
+        let m = fs::metadata(&items[0].src).unwrap();
+        filetime::set_file_mtime(&landed, FileTime::from_last_modification_time(&m)).unwrap();
+
+        let dests = vec![Destination {
+            dev: DeviceId::DestA,
+            root: a.clone(),
+        }];
+        let (tel, rx) = Telemetry::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let report = run_copy(&items, &dests, &tel, &cancel).unwrap();
+        drop(tel);
+
+        let plans: BTreeMap<DeviceId, u64> = rx
+            .iter()
+            .filter_map(|r| match r.event {
+                Event::DevicePlan { dev, bytes } => Some((dev, bytes)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(report.skipped_resume.len(), 1, "the file was already there");
+        assert_eq!(
+            plans.get(&DeviceId::DestA),
+            Some(&0),
+            "nothing left to write"
+        );
+        assert_eq!(
+            plans.get(&DeviceId::Card1),
+            Some(&0),
+            "nothing left to read"
+        );
     }
 
     #[test]

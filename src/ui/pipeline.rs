@@ -158,6 +158,22 @@ pub fn show(
     });
 }
 
+/// How far through its own work one device is.
+///
+/// A drive resume left nothing to do is **finished**, not stalled at zero, and
+/// the two have to look different: on a resumed night one destination can have
+/// the whole card already and the other none of it, and an empty bar next to a
+/// filling one would read as the drive having failed to start.
+fn fraction_done(d: &DeviceState) -> f32 {
+    match d.plan_bytes {
+        // The engine has not said yet.
+        None => 0.0,
+        // Nothing owed, so nothing outstanding.
+        Some(0) => 1.0,
+        Some(total) => (d.bytes as f32 / total as f32).clamp(0.0, 1.0),
+    }
+}
+
 /// Bytes the current phase has moved so far.
 ///
 /// The two phases count differently, and using the copy's rule for verify made
@@ -190,6 +206,16 @@ fn copy_view(
         .get(&source)
         .map(|d| d.smoothed_mbps(now))
         .unwrap_or(0.0);
+    // Every row is drawn against its own work. They used to share one number —
+    // the reader's position through the file list — which is true only while
+    // nothing is skipped: the fan-out keeps the destinations within one queue
+    // of each other, so one bar for all of them is honest on a fresh card. It
+    // stops being honest the moment resume is involved, because each drive
+    // then sits out a different set of files, and it was never honest for the
+    // reader itself, which emits nothing for a file every destination already
+    // holds — so a fully resumed run drew a bar stuck at zero while the phase
+    // ran to completion.
+    let progress_of = |dev: DeviceId| -> f32 { devices.get(&dev).map_or(0.0, fraction_done) };
 
     // --- the reader ---
     ui.horizontal(|ui| {
@@ -201,7 +227,7 @@ fn copy_view(
             );
         });
         let bar_width = bar_width(ui);
-        super::devices::meter(ui, state.progress(), bar_width, theme::TEXT);
+        super::devices::meter(ui, progress_of(source), bar_width, theme::TEXT);
         fixed(ui, W_RATE, |ui| {
             ui.label(
                 RichText::new(theme::mbps(reader_rate))
@@ -257,7 +283,7 @@ fn copy_view(
                 );
             });
             let bar_width = bar_width(ui);
-            super::devices::meter(ui, state.progress(), bar_width, hue);
+            super::devices::meter(ui, progress_of(*dev), bar_width, hue);
             let rate = devices.get(dev).map(|d| d.mbps).unwrap_or(0.0);
             fixed(ui, W_RATE, |ui| {
                 ui.label(
@@ -321,11 +347,7 @@ fn verify_view(ui: &mut Ui, devices: &BTreeMap<DeviceId, DeviceState>, now: f64)
     // its own pace. The rate is still on the row, as the number it always was.
     for (dev, dstate) in devices {
         let rate = dstate.smoothed_mbps(now);
-        let progress = if dstate.plan_bytes > 0 {
-            (dstate.bytes as f32 / dstate.plan_bytes as f32).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let progress = fraction_done(dstate);
         let hue = theme::device_colour(*dev);
         ui.horizontal(|ui| {
             fixed(ui, W_WHO, |ui| {
@@ -346,14 +368,13 @@ fn verify_view(ui: &mut Ui, devices: &BTreeMap<DeviceId, DeviceState>, now: f64)
             });
             // Both numbers, because "6.2 GB" alone does not say how much is
             // left and a bar alone does not say how much has been read.
-            let read = if dstate.plan_bytes > 0 {
-                format!(
+            let read = match dstate.plan_bytes {
+                Some(total) if total > 0 => format!(
                     "{} of {}",
                     theme::bytes(dstate.bytes).trim(),
-                    theme::bytes(dstate.plan_bytes).trim()
-                )
-            } else {
-                theme::bytes(dstate.bytes).trim().to_string()
+                    theme::bytes(total).trim()
+                ),
+                _ => theme::bytes(dstate.bytes).trim().to_string(),
             };
             ui.label(
                 RichText::new(read)

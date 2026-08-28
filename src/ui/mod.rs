@@ -441,7 +441,7 @@ impl App {
                         // The denominator belongs to the phase as much as the
                         // numerator does. Carrying copy's over into verify
                         // would draw every row against the wrong total.
-                        d.plan_bytes = 0;
+                        d.plan_bytes = None;
                     }
                     self.pipeline.file_index = 0;
                     self.pipeline.trail.clear();
@@ -466,7 +466,7 @@ impl App {
                 self.devices.entry(*id).or_default().info = Some((**info).clone());
             }
             Event::DevicePlan { dev, bytes } => {
-                self.devices.entry(*dev).or_default().plan_bytes = *bytes;
+                self.devices.entry(*dev).or_default().plan_bytes = Some(*bytes);
             }
             Event::Bytes { dev, delta } => {
                 self.devices.entry(*dev).or_default().bytes += delta;
@@ -490,11 +490,20 @@ impl App {
                 self.pipeline.file_total = *files;
                 self.pipeline.bytes_total = *bytes;
             }
-            Event::FileStart { idx, rel, size } => {
+            Event::FileStart {
+                idx,
+                rel,
+                size,
+                src,
+            } => {
                 self.pipeline.current_file =
                     Some(rel.rsplit('/').next().unwrap_or(rel).to_string());
                 self.pipeline.current_size = *size;
                 self.pipeline.file_index = *idx + 1;
+                // Follows the source across a relay-mode card rather than
+                // naming card 1 for the whole run. Nothing ever set this
+                // before, so the row read its own `unwrap_or(Card1)` fallback.
+                self.pipeline.source = Some(*src);
             }
             Event::Verdict(v) => self.verdict = Some(v.clone()),
             Event::FileDone { .. } | Event::Log { .. } => {}
@@ -1513,6 +1522,7 @@ mod tests {
             idx: 11,
             rel: "DCIM/100MSDCF/DSC01204.ARW".into(),
             size: 62_914_560,
+            src: DeviceId::Card2,
         });
         tel.ok(telemetry::Stage::Copy, "DSC01204.ARW copied");
         drop(tel);
@@ -1527,6 +1537,14 @@ mod tests {
         assert_eq!(app.pipeline.blocking(), Some(DeviceId::DestA));
         assert_eq!(app.pipeline.current_file.as_deref(), Some("DSC01204.ARW"));
         assert_eq!(app.pipeline.file_index, 12, "index is 1-based for display");
+        // The reader row names the card the bytes are coming off. Nothing set
+        // this before, so the row fell through to its own `unwrap_or(Card1)`
+        // and named card 1 for every run, whichever card was being read.
+        assert_eq!(
+            app.pipeline.source,
+            Some(DeviceId::Card2),
+            "the reader row must follow the source reconcile actually picked"
+        );
         assert_eq!(app.log.total_count(), 1, "only Log events become log rows");
     }
 

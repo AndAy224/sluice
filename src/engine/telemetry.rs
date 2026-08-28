@@ -187,6 +187,12 @@ pub enum Event {
         /// Forward-slash relative path, matching the manifest.
         rel: String,
         size: u64,
+        /// The card these bytes are being lifted off.
+        ///
+        /// `reconcile` picks a source per file — a file only card 2 holds is
+        /// read from card 2 — so this is not a property of the session. The
+        /// monitor's reader row had no way to know it and named card 1 always.
+        src: DeviceId,
     },
     /// Coalesced to ~10 Hz per device by [`ByteMeter`], not one per 4 MiB chunk.
     Bytes {
@@ -676,7 +682,8 @@ mod tests {
         assert!(!Event::FileStart {
             idx: 0,
             rel: "x".into(),
-            size: 1
+            size: 1,
+            src: DeviceId::Card1
         }
         .is_droppable());
     }

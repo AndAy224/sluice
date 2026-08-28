@@ -37,9 +37,12 @@ const STALE_AFTER: f64 = 0.75;
 pub struct DeviceState {
     pub info: Option<DeviceInfo>,
     pub bytes: u64,
-    /// What this device owes in the current phase, if the engine has said.
-    /// Zero means nobody has told us, not "nothing to do".
-    pub plan_bytes: u64,
+    /// What this device owes in the current phase, once the engine has said.
+    ///
+    /// `None` and `Some(0)` are different answers and the difference is
+    /// visible: nobody has told us yet, against a drive that resume left with
+    /// nothing to do. The first draws an empty bar, the second a full one.
+    pub plan_bytes: Option<u64>,
     pub mbps: f32,
     /// Job-elapsed seconds at the last throughput sample.
     last_sample_at: f64,
@@ -53,7 +56,7 @@ impl Default for DeviceState {
         Self {
             info: None,
             bytes: 0,
-            plan_bytes: 0,
+            plan_bytes: None,
             mbps: 0.0,
             last_sample_at: f64::NEG_INFINITY,
             history: [0.0; BUCKETS],
