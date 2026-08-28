@@ -770,6 +770,11 @@ pub fn run_job(cfg: &JobConfig, tel: &Telemetry, cancel: &Arc<AtomicBool>) -> Re
     // `account`, which proves the picture and sound are byte-identical rather
     // than assuming the difference is harmless.
     let accounted = account_twin_differences(&recon.items, &verify_report, cfg, tel, cancel);
+    // The camera's own index describes *this card* and differs between two slots
+    // by construction. There is nothing to prove about it, so its other version
+    // is kept rather than reasoned about -- see `account::CARD_INDEX_PATHS` for
+    // why that is an exact filename and never a size.
+    let kept = keep_card_indices(&recon.items, &verify_report, &dests, cfg, tel, cancel);
 
     // ---- MANIFEST --------------------------------------------------------
     let t = Instant::now();
@@ -777,6 +782,7 @@ pub fn run_job(cfg: &JobConfig, tel: &Telemetry, cancel: &Arc<AtomicBool>) -> Re
     let failures: Vec<FileFailure> = verify_report
         .failures()
         .filter(|f| !accounted.iter().any(|a| a.rel == f.rel))
+        .filter(|f| !kept.iter().any(|k| k.rel == f.rel))
         .map(|f| FileFailure {
             rel: f.rel.clone(),
             diagnosis: f.diagnosis.clone(),
@@ -815,6 +821,7 @@ pub fn run_job(cfg: &JobConfig, tel: &Telemetry, cancel: &Arc<AtomicBool>) -> Re
             &creator,
             &recon,
             &verify_report,
+            &kept,
             tel,
         ) {
             Ok(()) => true,
@@ -1229,6 +1236,7 @@ fn write_manifests(
     creator: &CreatorInfo,
     recon: &reconcile::Reconciliation,
     verify_report: &verify::VerifyReport,
+    kept: &[KeptIndex],
     tel: &Telemetry,
 ) -> Result<()> {
     let hashed_at = Utc::now();
@@ -1259,6 +1267,25 @@ fn write_manifests(
             size: item.size,
             mtime: item.mtime,
             hash,
+            hashed_at,
+        });
+    }
+
+    // The kept indices are data this session vouches for, not sidecars to be
+    // skipped: they are the reason erasing that card loses nothing, so
+    // `verify --drive` must re-check them like anything else.
+    for k in kept {
+        let Some(item) = recon.items.iter().find(|i| i.rel == k.rel) else {
+            bail!(
+                "an index was kept for {}, which is not in the copy list",
+                k.rel
+            );
+        };
+        entries.push(HashEntry {
+            rel: k.kept_rel.clone(),
+            size: k.size,
+            mtime: item.mtime,
+            hash: k.hash,
             hashed_at,
         });
     }
@@ -1445,6 +1472,10 @@ fn account_twin_differences(
                     essence_bytes: a.matched_bytes,
                 });
             }
+            // A card index is refused here and kept by `keep_card_indices`
+            // instead, so warning about it would be complaining about something
+            // handled two lines later.
+            Ok(account::Outcome::Refused(_)) if account::is_card_index(&item.rel, item.size) => {}
             Ok(account::Outcome::Refused(why)) => {
                 tel.warn(
                     Stage::Verify,
@@ -1461,6 +1492,130 @@ fn account_twin_differences(
                     format!("{}: could not compare the two cards: {e:#}", item.rel),
                 );
             }
+        }
+    }
+    out
+}
+
+/// One card index whose other version was kept on every destination.
+#[derive(Debug, Clone)]
+pub struct KeptIndex {
+    pub rel: String,
+    /// Where the other card's version was written, relative to the session.
+    pub kept_rel: String,
+    pub size: u64,
+    pub hash: u64,
+}
+
+/// Keep the other card's copy of the camera's own index.
+///
+/// Written to every destination, then read back **off each device** and required
+/// to hash to what the card held. A file counts as covered only when every
+/// destination proved it, so this moves a file from failing to passing only by
+/// actually putting the missing bytes on both drives -- never by deciding the
+/// difference did not matter.
+///
+/// Scoped by exact filename, so it cannot reach a photograph. See
+/// `account::CARD_INDEX_PATHS`.
+fn keep_card_indices(
+    items: &[reconcile::CopyItem],
+    report: &verify::VerifyReport,
+    dests: &[Destination],
+    cfg: &JobConfig,
+    tel: &Telemetry,
+    cancel: &Arc<AtomicBool>,
+) -> Vec<KeptIndex> {
+    let Some(card2) = cfg.card2.as_ref() else {
+        return Vec::new();
+    };
+    let by_rel: BTreeMap<&str, &reconcile::CopyItem> =
+        items.iter().map(|i| (i.rel.as_str(), i)).collect();
+    let mut out = Vec::new();
+
+    for fv in &report.files {
+        if !matches!(fv.diagnosis, verify::Diagnosis::TwinMismatch { .. }) {
+            continue;
+        }
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let Some(item) = by_rel.get(fv.rel.as_str()) else {
+            continue;
+        };
+        if !account::is_card_index(&item.rel, item.size) {
+            continue;
+        }
+        // The destinations hold whichever card supplied the bytes; the other
+        // card's version is the one with nowhere to live.
+        let other = match item.src_dev {
+            DeviceId::Card1 => DeviceId::Card2,
+            _ => DeviceId::Card1,
+        };
+        let Some(want) = fv.hashes.get(other) else {
+            continue;
+        };
+        let root = if other == DeviceId::Card1 {
+            &cfg.card1
+        } else {
+            card2
+        };
+        let src = copy::dest_path(root, &item.rel);
+        let dest_rel = account::kept_rel(&item.rel, other.label());
+
+        let mut ok = true;
+        let mut size = 0u64;
+        for d in dests {
+            let dest = copy::dest_path(&d.root, &dest_rel);
+            match account::keep(&src, &dest) {
+                Ok((got, n)) if got == want => size = n,
+                Ok(_) => {
+                    tel.err(
+                        Stage::Verify,
+                        format!(
+                            "{}: {}'s copy read back from {} as different bytes than the card \
+                             holds",
+                            item.rel,
+                            other.title(),
+                            d.dev.label()
+                        ),
+                    );
+                    ok = false;
+                }
+                Err(e) => {
+                    tel.err(
+                        Stage::Verify,
+                        format!(
+                            "{}: keeping {}'s copy failed: {e:#}",
+                            item.rel,
+                            other.label()
+                        ),
+                    );
+                    ok = false;
+                }
+            }
+            if !ok {
+                break;
+            }
+        }
+        if ok {
+            tel.ok(
+                Stage::Verify,
+                format!(
+                    "{}  the camera's own index differs between the cards, as it does by \
+                     construction — {}'s copy kept as {} ({} bytes), so neither card holds \
+                     anything the drives do not",
+                    item.rel,
+                    other.title(),
+                    dest_rel,
+                    size
+                ),
+            );
+            out.push(KeptIndex {
+                rel: item.rel.clone(),
+                kept_rel: dest_rel,
+                size,
+                hash: want,
+            });
         }
     }
     out

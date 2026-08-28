@@ -136,10 +136,17 @@ differ" rule preserved the corrupted copy and dropped it from the failures. A
 real ARW is 25–80 MB, so that rule would have masked a flipped bit in a
 photograph. Do not reintroduce a rule keyed on file size.
 
-Still failing, correctly: `PRIVATE/DATABASE/DATABASE.BIN`, where 212 bytes differ
-across 143 runs of a 9.67 MB vendor index with no published structure. Any rule
-for it would amount to trusting an unexplained binary difference, which is the
-one thing this codebase never does.
+`PRIVATE/DATABASE/DATABASE.BIN` is the one file nothing can be proven about — 212
+bytes differ across 143 runs of a 9.67 MB vendor index with no published
+structure. It is not reasoned about: `account::CARD_INDEX_PATHS` names it
+exactly, and the other card's copy is **kept** under `_twin/<card>/<rel>`,
+verified back off each destination and entered in the manifest. Both cards are
+then genuinely on both drives, so SAFE TO FORMAT is true rather than relaxed.
+
+That list is **exact relative paths, never a size or a pattern**, and the
+distinction is the whole safety argument: matching the path cannot reach a
+photograph, a clip, or anything else that is somebody's work. Widen it one
+observed filename at a time, on evidence.
 
 `MAX_DIFFERING_FRACTION` is 2% against a measured 0.58%. A low-bitrate proxy is
 also `.MP4` with the same per-frame metadata over far fewer picture bytes, so its
