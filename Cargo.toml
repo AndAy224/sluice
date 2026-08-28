@@ -1,6 +1,6 @@
 [package]
 name = "sluice"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Verified camera offload with twin-card cross-checking and an explicit format verdict"
 publish = false
