@@ -3,6 +3,7 @@
 //! [`run_job`] sequences the phases and is the whole engine API. It is fully
 //! drivable without a window, which is what keeps the UI cuttable scope.
 
+pub mod account;
 pub mod build_info;
 pub mod config;
 pub mod copy;
@@ -761,11 +762,21 @@ pub fn run_job(cfg: &JobConfig, tel: &Telemetry, cancel: &Arc<AtomicBool>) -> Re
         ms: verify_ms,
     });
 
+    // ---- ACCOUNT ---------------------------------------------------------
+    //
+    // A camera recording the same take to both slots writes a different UMID to
+    // each -- the SMPTE identifier for a material *instance*, which two cards
+    // are. The footage is identical and the twin check fails anyway. See
+    // `account`, which proves the picture and sound are byte-identical rather
+    // than assuming the difference is harmless.
+    let accounted = account_twin_differences(&recon.items, &verify_report, cfg, tel, cancel);
+
     // ---- MANIFEST --------------------------------------------------------
     let t = Instant::now();
     tel.phase(Phase::Manifest);
     let failures: Vec<FileFailure> = verify_report
         .failures()
+        .filter(|f| !accounted.iter().any(|a| a.rel == f.rel))
         .map(|f| FileFailure {
             rel: f.rel.clone(),
             diagnosis: f.diagnosis.clone(),
@@ -1356,4 +1367,101 @@ mod tests {
         assert_eq!(sanitise(""), "session");
         assert_eq!(sanitise(".."), "session");
     }
+}
+
+/// One file whose twins differ only outside the picture and sound.
+#[derive(Debug, Clone)]
+pub struct AccountedTwin {
+    pub rel: String,
+    pub differing_bytes: u64,
+    pub essence_bytes: u64,
+}
+
+/// Ask, for every file whose twins disagreed, whether the difference is
+/// confined to metadata.
+///
+/// Only files that come back [`account::Outcome::Accounted`] stop counting as
+/// failures. A refusal is logged with its reason and the file keeps its twin
+/// mismatch, which keeps the run failed -- so this can only ever move a file
+/// from failing to passing by *proving* the picture and sound identical, never
+/// by declining to look.
+fn account_twin_differences(
+    items: &[reconcile::CopyItem],
+    report: &verify::VerifyReport,
+    cfg: &JobConfig,
+    tel: &Telemetry,
+    cancel: &Arc<AtomicBool>,
+) -> Vec<AccountedTwin> {
+    let Some(card2) = cfg.card2.as_ref() else {
+        return Vec::new();
+    };
+    let by_rel: BTreeMap<&str, &reconcile::CopyItem> =
+        items.iter().map(|i| (i.rel.as_str(), i)).collect();
+    let mut out = Vec::new();
+
+    for fv in &report.files {
+        if !matches!(fv.diagnosis, verify::Diagnosis::TwinMismatch { .. }) {
+            continue;
+        }
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let Some(item) = by_rel.get(fv.rel.as_str()) else {
+            continue;
+        };
+        let on_c1 = copy::dest_path(&cfg.card1, &item.rel);
+        let on_c2 = copy::dest_path(card2, &item.rel);
+        match account::account(&on_c1, &on_c2) {
+            Ok(account::Outcome::Accounted(a)) => {
+                // Two different claims, reported as two different sentences. A
+                // clip's proof is about picture and sound; an index has neither,
+                // and saying it does would be telling the operator something
+                // that is not true about the file in front of them.
+                let what = match a.proof {
+                    account::Proof::EssenceUntouched => format!(
+                        "none of it inside the picture or sound — {} bytes of video and audio \
+                         are byte-identical on both cards",
+                        a.matched_bytes
+                    ),
+                    account::Proof::IdentifiersOnly => format!(
+                        "all of it inside the {} per-card identifier(s) this camera writes \
+                         (umid/mediaId) — the other {} bytes are byte-identical on both cards",
+                        a.sites, a.matched_bytes
+                    ),
+                };
+                tel.ok(
+                    Stage::Verify,
+                    format!(
+                        "{}  the cards differ in {} of {} bytes ({:.3}%), {what}",
+                        item.rel,
+                        a.differing_bytes,
+                        a.file_len,
+                        a.differing_fraction() * 100.0,
+                    ),
+                );
+                out.push(AccountedTwin {
+                    rel: item.rel.clone(),
+                    differing_bytes: a.differing_bytes,
+                    essence_bytes: a.matched_bytes,
+                });
+            }
+            Ok(account::Outcome::Refused(why)) => {
+                tel.warn(
+                    Stage::Verify,
+                    format!(
+                        "{}: the cards disagree and it could not be shown to be metadata — {}",
+                        item.rel,
+                        why.describe()
+                    ),
+                );
+            }
+            Err(e) => {
+                tel.err(
+                    Stage::Verify,
+                    format!("{}: could not compare the two cards: {e:#}", item.rel),
+                );
+            }
+        }
+    }
+    out
 }

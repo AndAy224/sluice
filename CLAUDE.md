@@ -101,6 +101,51 @@ When touching `verdict.rs`, keep the exhaustive test in
 property over every combination of inputs rather than over the cases that existed
 when it was written.
 
+### Two cards are not byte-identical, and that is correct
+
+A Sony body recording the same take to both slots writes a different **UMID** to
+each — the SMPTE 330M identifier for a material *instance*, and two cards are two
+instances. Measured on real hardware, that single fact accounts for every
+difference between a twin pair: the RTMD track carries the UMID once per frame,
+the `meta` box carries it again in an embedded clip XML, and `MEDIAPRO.XML` /
+`*M01.XML` carry it as attributes. The camera is not malfunctioning.
+
+Without `account.rs`, sluice could therefore **never** reach SAFE TO FORMAT for
+two-slot video — it failed on an identifier, and told the operator `CARD 2 IS
+SUSPECT` about a healthy card.
+
+`account::account` decides whether a twin difference is confined to metadata, and
+dispatches on the file's own kind. Two things about it are load-bearing:
+
+- **It proves, it does not tolerate.** For an `.mp4` it walks the container's
+  sample tables and requires that *not one differing byte* lies inside a video or
+  audio sample — a positive statement about the footage, not an assumption that
+  the difference is harmless. The tables are read only from a `moov` that is
+  byte-identical on both cards, and that `moov`'s digest must be reproduced by
+  the unbuffered pass, so the parse is anchored to the bytes actually verified.
+  For `.xml` it requires every differing byte to fall inside the value of a
+  `umidRef` / `umid` / `mediaId` attribute, with both cards producing the same
+  spans at the same offsets.
+- **Anything else refuses**, and a refusal is exactly today's behaviour: the file
+  keeps its `TwinMismatch` and the run keeps its `Failed`.
+
+The rule is deliberately per-file-kind and never size-based. A size-based version
+was written and **failed its own safety test**: `injected_twin_divergence_fails_
+and_names_card_two` flips a bit in a 26-byte `.ARW`, and a "small files may
+differ" rule preserved the corrupted copy and dropped it from the failures. A
+real ARW is 25–80 MB, so that rule would have masked a flipped bit in a
+photograph. Do not reintroduce a rule keyed on file size.
+
+Still failing, correctly: `PRIVATE/DATABASE/DATABASE.BIN`, where 212 bytes differ
+across 143 runs of a 9.67 MB vendor index with no published structure. Any rule
+for it would amount to trusting an unexplained binary difference, which is the
+one thing this codebase never does.
+
+`MAX_DIFFERING_FRACTION` is 2% against a measured 0.58%. A low-bitrate proxy is
+also `.MP4` with the same per-frame metadata over far fewer picture bytes, so its
+excused share climbs steeply — that configuration is **unmeasured** and refuses.
+Measure a proxy pair before touching the number.
+
 ### Unbuffered reads are load-bearing
 
 `FILE_FLAG_NO_BUFFERING` is what makes "verified off the physical media" true
